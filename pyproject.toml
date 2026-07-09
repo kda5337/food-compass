@@ -1,0 +1,33 @@
+[project]
+name = "food-compass"
+version = "0.1.0"
+description = "장바구니 물가 판단 에이전트 - LangGraph 기반 가격 판단 AI Agent"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.27.0",
+    "streamlit>=1.40.0",
+    "chromadb>=0.5.0",
+    "langchain-core>=0.3.0",
+    "langchain-community>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-upstage>=0.3.0",
+    "langgraph>=0.2.0",
+
+    "sse-starlette>=2.1.0",   # Day3: SSE 스트리밍 응답 (FastAPI StreamingResponse만으론 SSE 포맷 처리가 번거로움)
+    "tenacity>=9.0.0",         # Day3/Day5: KAMIS·참가격 API 실패 시 재시도(Retry) 로직
+    "litellm>=1.50.0",         # 기술스택 명시된 LLMOps 모델 게이트웨이
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",           # Day2: 핵심 흐름 단위 테스트
+    "pytest-asyncio>=0.24.0",  # LangGraph/FastAPI 비동기 노드 테스트용
+]
+stretch = [
+    "langfuse>=2.50.0",        # Day5: LLMOps 선택 가점 항목 (Trace)
+]
