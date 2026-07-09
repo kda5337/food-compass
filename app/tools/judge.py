@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.state import AgentState
-from app.schemas import JudgePriceOutput
+from app.schemas.JudgePriceOutput import JudgePrice
 
 _EXPENSIVE_THRESHOLD = 10.0   # 평년 대비 +10% 초과 → 비쌈
 _CHEAP_THRESHOLD = -10.0      # 평년 대비 -10% 미만 → 쌈
@@ -18,13 +18,13 @@ def parse_price(price_str: str) -> float | None:
         return None
 
 
-def judge_price(dpr1: str, dpr7: str) -> JudgePriceOutput:
+def judge_price(dpr1: str, dpr7: str) -> JudgePrice:
     """당일가(dpr1)를 평년가(dpr7)와 비교하여 비쌈/적정/쌈 판정."""
     today = parse_price(dpr1)
     avg = parse_price(dpr7)
 
     if today is None or avg is None or avg == 0:
-        return JudgePriceOutput(status="적정", diff_pct=0.0)
+        return JudgePrice(status="적정", diff_pct=0.0)
 
     diff_pct = (today - avg) / avg * 100
 
@@ -35,7 +35,7 @@ def judge_price(dpr1: str, dpr7: str) -> JudgePriceOutput:
     else:
         status = "적정"
 
-    return JudgePriceOutput(status=status, diff_pct=round(diff_pct, 1))
+    return JudgePrice(status=status, diff_pct=round(diff_pct, 1))
 
 
 def judge_price_node(state: AgentState) -> dict[str, Any]:

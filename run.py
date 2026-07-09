@@ -3,9 +3,9 @@
 실행: .venv/Scripts/python.exe run.py
 """
 from app.graph import compiled_graph
+import asyncio
 
-
-def main():
+async def main():
     print("=" * 50)
     print("  장바구니 물가 판단 에이전트 (Day2 Mock)")
     print("  종료: 'q' 또는 'exit' 입력")
@@ -25,10 +25,10 @@ def main():
         if not query:
             continue
 
-        result = compiled_graph.invoke({"user_query": query})
+        result = await compiled_graph.ainvoke({"user_query": query})
         print(f"\n[{result.get('route', '?').upper()}]")
         print(result.get("answer", "응답 없음"))
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

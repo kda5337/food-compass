@@ -2,9 +2,27 @@ from __future__ import annotations
 import re
 from typing import Any, Set
 
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_upstage import ChatUpstage
+
+from app.core.config import settings
 from app.core.state import AgentState
 from app.prompts.prompts import ROUTER_SYSTEM_PROMPT  # noqa: F401 — Day3 LLM 연동 시 사용
-from app.schemas import RouterOutput
+from app.schemas.RouterOutput import ParseQuery
+
+def get_llm() -> ChatUpstage:
+    """
+    Upstage Solar LLM 클라이언트를 반환합니다.
+    Returns:
+        ChatUpstage: Upstage Solar LLM 클라이언트
+    """
+    return ChatUpstage(
+        api_key=settings.upstage_api_key,
+        model=settings.llm_model,
+        timeout=30,
+        max_retries=2,
+    )
+llm = get_llm()
 
 # 가격 관련 키워드 (mock router 전용)
 _PRICE_KEYWORDS: Set[str] = {
@@ -43,18 +61,34 @@ def _item_in_query(item: str, query: str) -> bool:
             return True
     return False
 
-
-def _mock_router(query: str) -> RouterOutput:
-    """키워드 기반 Mock 라우터 — Day3에 실제 Upstage Solar LLM 호출로 교체."""
+# fallback용도로 남겨둠
+async def _mock_router(query: str) -> ParseQuery:
+    '''
+    키워드 기반 Mock 라우터 — Day3에 실제 Upstage Solar LLM 호출로 교체.
     found_items = [item for item in _FOOD_ITEMS if _item_in_query(item, query)]
     has_price_keyword = any(kw in query for kw in _PRICE_KEYWORDS)
 
     if found_items or has_price_keyword:
-        return RouterOutput(route="price", items=found_items)
-    return RouterOutput(route="off-topic", items=[])
+        return ParseQuery(route="price", items=found_items)
+    return ParseQuery(route="off-topic", items=[])
+    '''
+    structured_llm = llm.with_structured_output(ParseQuery)
+    messages = [
+        HumanMessage(content=f"{ROUTER_SYSTEM_PROMPT}"),
+        HumanMessage(content=f"사용자 질문: {query}"),
+    ]
 
+    try:
+        result = await structured_llm.ainvoke(messages)
+        result_intent = result.intent
+        result_target_item = result.items
+        print(f"🔀 [Router] 의도: {result_intent}, target-items: {result_target_item}")
+        return result
 
-def router_node(state: AgentState) -> dict[str, Any]:
+    except Exception as e:
+        print(f"Router 노드 오류: {e}")
+
+async def router_node(state: AgentState) -> dict[str, Any]:
     query = state["user_query"]
-    result = _mock_router(query)
-    return {"route": result.route, "items": result.items}
+    result = await _mock_router(query)
+    return {"route": result.intent, "items": result.items}

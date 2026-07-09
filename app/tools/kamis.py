@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.state import AgentState
-from app.schemas import RawPriceOutput
+from app.schemas.JudgePriceOutput import RawPriceOutput
 
 _MOCK_DATA_PATH = (
     Path(__file__).parent.parent.parent / "tests" / "fixtures" / "kamis_mock.json"
