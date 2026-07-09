@@ -31,3 +31,6 @@ dev = [
 stretch = [
     "langfuse>=2.50.0",        # Day5: LLMOps 선택 가점 항목 (Trace)
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

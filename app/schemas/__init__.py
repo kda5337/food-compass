@@ -5,9 +5,11 @@ from .schemas import (
     RouterOutput,
     SubstituteOutput,
 )
+from .RouterOutput import ParseQuery
 
 __all__ = [
     "RouterOutput",
+    "ParseQuery",
     "RawPriceInput",
     "RawPriceOutput",
     "JudgePriceOutput",

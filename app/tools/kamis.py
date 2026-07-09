@@ -1,10 +1,12 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.graph.state import AgentState
 from app.schemas import RawPriceOutput
+
+if TYPE_CHECKING:
+    from app.graph.state import AgentState
 
 _MOCK_DATA_PATH = (
     Path(__file__).parent.parent.parent / "tests" / "fixtures" / "kamis_mock.json"

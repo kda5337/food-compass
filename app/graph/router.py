@@ -2,17 +2,21 @@ from __future__ import annotations
 import re
 from typing import Any, Set
 
-from .state import AgentState
-from app.prompts.prompts import ROUTER_SYSTEM_PROMPT  # noqa: F401 — Day3 LLM 연동 시 사용
-from app.schemas import RouterOutput
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_upstage import ChatUpstage
 
-# 가격 관련 키워드 (mock router 전용)
+from .state import AgentState
+from app.core.config import settings
+from app.prompts.prompts import ROUTER_SYSTEM_PROMPT
+from app.schemas import ParseQuery
+
+# 가격 관련 키워드 (keyword fallback 전용)
 _PRICE_KEYWORDS: Set[str] = {
     "비싸", "비싼", "싸다", "저렴", "시세", "가격", "얼마", "원",
     "사도", "사야", "구매", "살만", "요즘", "지금", "할만", "비쌈", "쌈",
 }
 
-# 식품 품목 목록 (mock router 전용)
+# 식품 품목 목록 (keyword fallback 전용)
 _FOOD_ITEMS: Set[str] = {
     "상추", "배추", "오이", "당근", "깻잎", "파", "마늘", "감자", "고추",
     "양파", "무", "시금치", "브로콜리", "양배추", "애호박", "가지", "토마토",
@@ -43,17 +47,42 @@ def _item_in_query(item: str, query: str) -> bool:
     return False
 
 
-def _mock_router(query: str) -> RouterOutput:
-    """키워드 기반 Mock 라우터 — Day3에 실제 Upstage Solar LLM 호출로 교체."""
+def _keyword_router(query: str) -> ParseQuery:
+    """키워드 기반 Fallback 라우터 — LLM 오류 시 사용."""
     found_items = [item for item in _FOOD_ITEMS if _item_in_query(item, query)]
     has_price_keyword = any(kw in query for kw in _PRICE_KEYWORDS)
-
     if found_items or has_price_keyword:
-        return RouterOutput(route="price", items=found_items)
-    return RouterOutput(route="off-topic", items=[])
+        return ParseQuery(intent="price", items=found_items)
+    return ParseQuery(intent="off-topic", items=[])
 
 
-def router_node(state: AgentState) -> dict[str, Any]:
+def _get_llm() -> ChatUpstage:
+    return ChatUpstage(
+        api_key=settings.upstage_api_key,
+        model=settings.llm_model,
+        timeout=30,
+        max_retries=2,
+    )
+
+
+async def _llm_router(query: str) -> ParseQuery:
+    """Upstage Solar LLM 구조화 출력 라우터. 실패 시 keyword fallback."""
+    try:
+        llm = _get_llm()
+        structured_llm = llm.with_structured_output(ParseQuery)
+        messages = [
+            SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+            HumanMessage(content=f"사용자 질문: {query}"),
+        ]
+        result = await structured_llm.ainvoke(messages)
+        print(f"[Router] 의도: {result.intent}, 품목: {result.items}")
+        return result
+    except Exception as e:
+        print(f"[Router] LLM 오류 → keyword fallback: {e}")
+        return _keyword_router(query)
+
+
+async def router_node(state: AgentState) -> dict[str, Any]:
     query = state["user_query"]
-    result = _mock_router(query)
-    return {"route": result.route, "items": result.items}
+    result = await _llm_router(query)
+    return {"route": result.intent, "items": result.items}

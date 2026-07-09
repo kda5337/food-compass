@@ -1,8 +1,10 @@
 from __future__ import annotations
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.graph.state import AgentState
 from app.schemas import JudgePriceOutput
+
+if TYPE_CHECKING:
+    from app.graph.state import AgentState
 
 _EXPENSIVE_THRESHOLD = 10.0   # 평년 대비 +10% 초과 → 비쌈
 _CHEAP_THRESHOLD = -10.0      # 평년 대비 -10% 미만 → 쌈
