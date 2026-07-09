@@ -7,15 +7,20 @@
 
 ## 0. 사전 준비
 
-- [v] 레포 폴더 구조 확정 및 생성
+- [ ] 레포 폴더 구조 확정 및 생성
   - **내용**: `app/agents/`, `app/core/`, `app/prompts/`, `app/graph.py`, `app/api.py`, `app/schemas.py`, `app/vector_store.py`, `tests/` 폴더 생성
   - **Tool**: GitHub, VS Code
   - **참고**: 코드읽기 가이드의 Medical QA 예제 구조 그대로 재사용
 
-- [v] 가상환경 및 의존성 설치
-  - **내용**: `langgraph`, `langchain`, `pydantic`, `fastapi`, `pytest`, `python-dotenv`, `chromadb` 설치
+- [ ] 가상환경 및 의존성 설치
+  - **내용**: `langgraph`, `langchain`, `pydantic`, `fastapi`, `pytest`, `python-dotenv`, `chromadb`, `psycopg2-binary` 설치
   - **Tool**: `uv` 또는 `venv` + `pip`
-  - **명령어 예시**: `uv add langgraph langchain pydantic fastapi pytest python-dotenv chromadb`
+  - **명령어 예시**: `uv add langgraph langchain pydantic fastapi pytest python-dotenv chromadb psycopg2-binary`
+
+- [ ] `.env` / `.env.example`에 PostgreSQL 접속 정보 추가
+  - **내용**: `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` 5개 변수 추가
+  - **Tool**: `.env.example`
+  - **참고**: 로컬 개발 중엔 `POSTGRES_HOST=localhost`로 두고, Day4 배포 시 private 서버 IP로 교체
 
 ---
 
@@ -131,6 +136,33 @@
 
 ---
 
+## 7. 가격 캐시 DB (PostgreSQL) 구성 — 신규 추가
+
+> 배경: ChromaDB는 "의미 유사도 검색"(대체품 추천) 전용으로만 쓰고, API 실패 시 Fallback용 가격 캐시는
+> 정확한 키 조회가 필요해 별도 PostgreSQL에 저장하기로 결정. private DB 서버에 ChromaDB와 나란히 구성.
+
+- [ ] `docker-compose.db.yml` 작성 (private 서버 전용)
+  - **내용**: `chromadb`, `postgres` 두 서비스를 정의. 로컬 개발 중엔 이 파일을 로컬에서 그대로 띄워서 테스트
+  - **Tool**: Docker Compose
+  - **참고**: 앱 서버용 `docker-compose.yml`과는 분리해서 관리 (나중에 private/public 서버 분리 배포 시 이 파일만 private 서버로)
+
+- [ ] `db/init.sql` 작성 — `price_cache` 테이블 스키마
+  - **내용**: `item_name`(PK), `source`, `price_data`(JSONB), `cached_at` 컬럼으로 테이블 생성 + `cached_at` 인덱스
+  - **Tool**: PostgreSQL, SQL
+  - **배경지식**: JSONB 컬럼 개념(스키마 유연성), `ON CONFLICT ... DO UPDATE`(upsert) 문법
+
+- [ ] `app/tools/price_cache.py` 구현
+  - **내용**: `save_price_cache(item_name, source, price_data)` / `get_price_cache(item_name, max_age_hours)` 두 함수 작성
+  - **Tool**: `psycopg2`
+  - **배경지식**: DB 커넥션 관리(connect/commit/close), upsert 쿼리
+
+- [ ] 로컬에서 Postgres 컨테이너 띄우고 save/get 왕복 테스트
+  - **내용**: `docker compose -f docker-compose.db.yml up -d` 실행 후, 더미 데이터로 `save_price_cache` → `get_price_cache` 호출해서 값이 그대로 돌아오는지 확인
+  - **Tool**: Docker, Python REPL
+  - **참고**: 실제 `get_raw_price`에 try/except로 연결해서 Fallback으로 동작시키는 건 Day3(실 API 연동) 작업. 오늘은 캐시 저장/조회 자체만 동작 확인하면 충분
+
+---
+
 ## 진행 체크 (팀 공유용)
 
 | 담당자 | 담당 파트 | 완료 여부 |
@@ -139,5 +171,6 @@
 | | ReAct Loop + Mock 검증 | [ ] |
 | | pytest 테스트 | [ ] |
 | | RAG 기본 구성 | [ ] |
+| | 가격 캐시 DB (PostgreSQL) 구성 | [ ] |
 
 **Day2 완료 기준**: 위 체크리스트가 전부 체크되고, `pytest` 전체 실행 시 에러 없이 통과하는 상태로 하루를 마감합니다.
