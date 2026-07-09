@@ -1,0 +1,56 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: chroma
+  labels:
+    cloud.googleapis.com/location: asia-northeast3
+  annotations:
+    run.googleapis.com/launch-stage: BETA
+    run.googleapis.com/ingress: all
+    run.googleapis.com/maxScale: '1'
+    run.googleapis.com/minScale: '0'
+
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/startup-cpu-boost: 'true'
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: 764702341520-compute@developer.gserviceaccount.com
+      containers:
+      - image: chromadb/chroma
+        ports:
+        - containerPort: 8000
+        env:
+        - name: CHROMA_SERVER_AUTHN_CREDENTIALS
+          value: food-compass-foodcompass
+        - name: CHROMA_SERVER_AUTHN_PROVIDER
+          value: chromadb.auth.token_authn.TokenAuthenticationServerProvider
+        - name: PERSIST_DIRECTORY
+          value: /data
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 4Gi
+        volumeMounts:
+        - name: gcs-1
+          mountPath: /data
+        startupProbe:
+          timeoutSeconds: 240
+          periodSeconds: 240
+          failureThreshold: 1
+          tcpSocket:
+            port: 8000
+      volumes:
+      - name: gcs-1
+        csi:
+          driver: gcsfuse.run.googleapis.com
+          readOnly: false
+          volumeAttributes:
+            bucketName: food-compass-chroma-db-master
+  traffic:
+  - percent: 100
+    latestRevision: true
