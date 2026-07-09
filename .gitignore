@@ -15,3 +15,12 @@ venv/
 
 # uv
 .python-version
+
+# 개발 노트 (로컬 전용, GitHub push 제외)
+dev_notes/
+
+# ChromaDB 로컬 DB
+chroma_db/
+
+#
+CLAUDE.md
