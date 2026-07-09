@@ -1,6 +1,6 @@
 import pytest
 
-from app.agents.router import router_node
+from app.graph.router import router_node
 
 
 class TestRouterNode:

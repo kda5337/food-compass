@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any
 
-from app.core.state import AgentState
+from app.graph.state import AgentState
 from app.schemas import JudgePriceOutput
 
 _EXPENSIVE_THRESHOLD = 10.0   # 평년 대비 +10% 초과 → 비쌈

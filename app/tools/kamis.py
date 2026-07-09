@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.core.state import AgentState
+from app.graph.state import AgentState
 from app.schemas import RawPriceOutput
 
 _MOCK_DATA_PATH = (

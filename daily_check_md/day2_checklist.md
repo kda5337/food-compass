@@ -41,6 +41,7 @@
   - **Tool**: Pydantic
 
 - [ ] (RAG 기본 구성과 연계) `search_substitute` 출력 스키마 초안
+
   - **내용**: 출력 `{substitutes: [str], source: str}` — Day5에 본격 구현되지만 스키마는 미리 잡아두기
   - **Tool**: Pydantic
 
@@ -136,30 +137,31 @@
 
 ---
 
-## 7. 가격 캐시 DB (PostgreSQL) 구성 — 신규 추가
+## 7. 가격 캐시 DB (Supabase) 구성 — 신규 추가
 
 > 배경: ChromaDB는 "의미 유사도 검색"(대체품 추천) 전용으로만 쓰고, API 실패 시 Fallback용 가격 캐시는
-> 정확한 키 조회가 필요해 별도 PostgreSQL에 저장하기로 결정. private DB 서버에 ChromaDB와 나란히 구성.
+> 정확한 키 조회가 필요해 별도 PostgreSQL에 저장. 직접 서버 운영 대신 Supabase(hosted PostgreSQL)를 사용해
+> 서버 관리 부담을 없애기로 결정. `docker-compose.db.yml` 불필요.
 
-- [ ] `docker-compose.db.yml` 작성 (private 서버 전용)
-  - **내용**: `chromadb`, `postgres` 두 서비스를 정의. 로컬 개발 중엔 이 파일을 로컬에서 그대로 띄워서 테스트
-  - **Tool**: Docker Compose
-  - **참고**: 앱 서버용 `docker-compose.yml`과는 분리해서 관리 (나중에 private/public 서버 분리 배포 시 이 파일만 private 서버로)
+- [ ] Supabase 프로젝트 생성 및 `DATABASE_URL` 발급
+  - **내용**: supabase.com에서 새 프로젝트 생성 → Project Settings > Database > Connection string(URI) 복사 → `.env`에 `DATABASE_URL` 설정
+  - **Tool**: Supabase 대시보드
+  - **참고**: 무료 티어(500MB, 비활성 2주 후 일시정지)로 충분. 팀원과 같은 프로젝트 공유하거나 각자 별도 생성 가능
 
 - [ ] `db/init.sql` 작성 — `price_cache` 테이블 스키마
   - **내용**: `item_name`(PK), `source`, `price_data`(JSONB), `cached_at` 컬럼으로 테이블 생성 + `cached_at` 인덱스
-  - **Tool**: PostgreSQL, SQL
+  - **Tool**: Supabase SQL Editor 또는 psycopg2로 실행
   - **배경지식**: JSONB 컬럼 개념(스키마 유연성), `ON CONFLICT ... DO UPDATE`(upsert) 문법
 
 - [ ] `app/tools/price_cache.py` 구현
   - **내용**: `save_price_cache(item_name, source, price_data)` / `get_price_cache(item_name, max_age_hours)` 두 함수 작성
-  - **Tool**: `psycopg2`
+  - **Tool**: `psycopg2`, `DATABASE_URL` 환경변수
   - **배경지식**: DB 커넥션 관리(connect/commit/close), upsert 쿼리
 
-- [ ] 로컬에서 Postgres 컨테이너 띄우고 save/get 왕복 테스트
-  - **내용**: `docker compose -f docker-compose.db.yml up -d` 실행 후, 더미 데이터로 `save_price_cache` → `get_price_cache` 호출해서 값이 그대로 돌아오는지 확인
-  - **Tool**: Docker, Python REPL
-  - **참고**: 실제 `get_raw_price`에 try/except로 연결해서 Fallback으로 동작시키는 건 Day3(실 API 연동) 작업. 오늘은 캐시 저장/조회 자체만 동작 확인하면 충분
+- [ ] Supabase에서 save/get 왕복 테스트
+  - **내용**: 더미 데이터로 `save_price_cache` → `get_price_cache` 호출해서 값이 그대로 돌아오는지 확인. Supabase 대시보드 Table Editor에서 데이터 삽입 결과도 육안 확인
+  - **Tool**: Python REPL
+  - **참고**: 실제 `get_raw_price`에 try/except로 Fallback 연결은 Day3(실 API 연동) 작업
 
 ---
 

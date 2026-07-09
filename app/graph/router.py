@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 from typing import Any, Set
 
-from app.core.state import AgentState
+from .state import AgentState
 from app.prompts.prompts import ROUTER_SYSTEM_PROMPT  # noqa: F401 — Day3 LLM 연동 시 사용
 from app.schemas import RouterOutput
 
@@ -19,7 +19,6 @@ _FOOD_ITEMS: Set[str] = {
     "사과", "딸기", "바나나", "수박", "참외", "포도", "복숭아",
     "쌀", "고구마", "콩나물", "두부",
 }
-
 
 # 품목명 뒤에 붙어도 식품 언급으로 인정할 한국어 조사 목록
 _PARTICLES = {
