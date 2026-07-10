@@ -14,15 +14,21 @@ class RawPriceInput(BaseModel):
 
 class RawPriceOutput(BaseModel):
     item_name: str
-    dpr1: str  # 당일가
-    dpr5: str  # 전월가
-    dpr7: str  # 평년가
     unit: str
+    dpr1: str  # 당일가
+    dpr2: str  # 1일전
+    dpr3: str  # 1주일전
+    dpr4: str  # 2주일전
+    dpr5: str  # 1개월전
+    dpr6: str  # 1년전
+    dpr7: str  # 평년가
 
 
 class JudgePriceOutput(BaseModel):
     status: Literal["비쌈", "적정", "쌈"]
-    diff_pct: float
+    diff_pct: float  # 평년(dpr7) 대비
+    week_diff_pct: float | None = None   # 1주일전(dpr3) 대비
+    month_diff_pct: float | None = None  # 1개월전(dpr5) 대비
 
 
 class SubstituteOutput(BaseModel):
