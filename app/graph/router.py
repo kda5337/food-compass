@@ -1,365 +1,86 @@
-"""
-KAMIS(농수산물) + 참가격(생필품) 품목명을 가져와서 하나의 Chroma DB 컬렉션에 저장하는 스크립트.
+from __future__ import annotations
+import re
+from typing import Any, Set
 
-- KAMIS: productInfo(식량작물/채소류/특용작물/과일류/수산물) + dailySalesList(축산물)
-- 참가격(price.go.kr): 생필품 품목 마스터
-- "식품(가공식품)" 카테고리는 KAMIS/참가격 어디에도 없어서 별도 API(data.go.kr) 연동이 필요합니다.
-"""
-
-import os
-import sys
-import gc
-import shutil
-import asyncio
-import chromadb
-import requests
-import xml.etree.ElementTree as ET
-
-from dotenv import load_dotenv
-from tqdm import tqdm
-from collections import defaultdict
-from langchain_upstage import ChatUpstage
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_upstage import ChatUpstage
 
-load_dotenv()  # .env 파일을 읽어 os.environ에 반영
+from .state import AgentState
+from app.core.config import settings
+from app.prompts.prompts import ROUTER_SYSTEM_PROMPT
+from app.schemas import ParseQuery
 
-KAMIS_CERT_KEY = os.getenv("KAMIS_CERT_KEY")
-KAMIS_CERT_ID = os.getenv("KAMIS_CERT_ID")
-PRICE_GOKR_SERVICE_KEY = os.getenv("PRICE_GOKR_SERVICE_KEY")
-UPSTAGE_API_KEY = os.getenv("UPSTAGE_API_KEY")
-LLM_MODEL = os.getenv("LLM_MODEL", "solar-pro")
+# 가격 관련 키워드 (keyword fallback 전용)
+_PRICE_KEYWORDS: Set[str] = {
+    "비싸", "비싼", "싸다", "저렴", "시세", "가격", "얼마", "원",
+    "사도", "사야", "구매", "살만", "요즘", "지금", "할만", "비쌈", "쌈",
+}
 
-CHROMA_DB_PATH = "./data/chroma_db"
-COLLECTION_NAME = "all_food_products"  # 모든 함수가 이 상수 하나만 참조
+# 식품 품목 목록 (keyword fallback 전용)
+_FOOD_ITEMS: Set[str] = {
+    "상추", "배추", "오이", "당근", "깻잎", "파", "마늘", "감자", "고추",
+    "양파", "무", "시금치", "브로콜리", "양배추", "애호박", "가지", "토마토",
+    "사과", "딸기", "바나나", "수박", "참외", "포도", "복숭아",
+    "쌀", "고구마", "콩나물", "두부",
+}
 
-DESC_SYSTEM_PROMPT = (
-    "너는 농수산물/생필품 품목명을 보고 그게 무엇인지 짧게 설명하는 도우미다. "
-    "입력으로 품목명 하나가 주어지면, 20자 내외의 한국어 한 문장으로만 설명하라. "
-    "다른 말은 절대 덧붙이지 말고 설명 문장 하나만 답하라."
-)
+# 품목명 뒤에 붙어도 식품 언급으로 인정할 한국어 조사 목록
+_PARTICLES = {
+    "가", "이", "는", "은", "을", "를", "의", "도", "에", "로", "으로",
+    "와", "과", "랑", "이랑", "에서", "이나", "나", "하고", "만",
+    "까지", "부터", "마저", "조차", "이며", "며", "이고", "고",
+}
 
+def _item_in_query(item: str, query: str) -> bool:
+    """품목명이 공백 분리 토큰 안에서 온전히 포함되는지 확인.
 
-def check_env_vars() -> bool:
-    """필요한 환경변수가 모두 채워져 있는지 먼저 확인."""
-    missing = [
-        name
-        for name, value in [
-            ("KAMIS_CERT_KEY", KAMIS_CERT_KEY),
-            ("KAMIS_CERT_ID", KAMIS_CERT_ID),
-            ("PRICE_GOKR_SERVICE_KEY", PRICE_GOKR_SERVICE_KEY),
-        ]
-        if not value
-    ]
-    if missing:
-        print("[환경변수 누락] .env에 다음 값이 비어 있습니다:", ", ".join(missing))
-        print("   .env.example을 복사해 .env로 만들고 실제 키 값을 채워주세요.\n")
-        return False
-    return True
-
-
-# ── 1. KAMIS (농수산물 + 축산물) ────────────────────────────────────────
-
-def get_kamis_names() -> list[str]:
-    """KAMIS productInfo(5개 부류) + dailySalesList(축산물)을 합쳐서 전체 품목명 반환."""
-    url = "https://www.kamis.or.kr/service/price/xml.do"
-    print("── KAMIS (농수산물 품목 리스트) ──")
-
-    # 1-1. productInfo — 식량작물/채소류/특용작물/과일류/수산물
-    params_product_info = {
-        "action": "productInfo",
-        "p_cert_key": KAMIS_CERT_KEY,
-        "p_cert_id": KAMIS_CERT_ID,
-        "p_returntype": "json",
-    }
-    res = requests.get(url, params=params_product_info, timeout=10)
-    data = res.json()
-
-    error_code = data.get("error_code")
-    items = data.get("info", [])
-
-    base_names = []
-    if error_code != "000":
-        print(f"productInfo 실패 — error_code={error_code}")
-        print(res.text[:300])
-    else:
-        by_category = defaultdict(set)
-        for item in items:
-            name = item.get("itemname")
-            cat = item.get("itemcategoryname")
-            if name and cat:
-                by_category[cat].add(name)
-
-        for cat, names in by_category.items():
-            print(f"[{cat}] {len(names)}개: {sorted(names)}")
-
-        base_names = list(dict.fromkeys(
-            item.get("itemname") for item in items if item.get("itemname")
-        ))
-
-    # 1-2. dailySalesList — 축산물만 추출 (productInfo에는 축산물이 없음)
-    params_daily_sales = {
-        "action": "dailySalesList",
-        "p_cert_key": KAMIS_CERT_KEY,
-        "p_cert_id": KAMIS_CERT_ID,
-        "p_returntype": "json",
-    }
-    res = requests.get(url, params=params_daily_sales, timeout=10)
-    data = res.json()
-    items = data.get("price", data.get("data", []))
-
-    livestock_names = set()
-    for item in items:
-        if item.get("category_name") != "축산물":
-            continue
-        raw_name = item.get("item_name", "")
-        name = raw_name.split("/")[0].strip()  # "돼지고기/kg" → "돼지고기"
-        if name:
-            livestock_names.add(name)
-
-    livestock_names = sorted(livestock_names)
-    print(f"[축산물] {len(livestock_names)}개: {livestock_names}")
-
-    # 1-3. 합치기
-    all_names = list(dict.fromkeys(base_names + livestock_names))
-    print(f"\nKAMIS 총 {len(all_names)}개 (식품 제외 6개 부류)")
-
-    return all_names
-
-
-# ── 2. 참가격 (생필품) ───────────────────────────────────────────────
-
-def get_price_gokr_items() -> list[dict]:
-    """참가격 API에서 goodId + goodName을 함께 반환."""
-    url = "http://openapi.price.go.kr/openApiImpl/ProductPriceInfoService/getProductInfoSvc.do"
-    params = {"ServiceKey": PRICE_GOKR_SERVICE_KEY}
-
-    print("── 참가격 (생필품 가격 정보) ──")
-    res = requests.get(url, params=params, timeout=10)
-    root = ET.fromstring(res.content)
-    items = root.findall(".//item")
-
-    results = []
-    for item in items:
-        gid = item.find("goodId")
-        gname = item.find("goodName")
-        if gid is not None and gname is not None and gname.text:
-            results.append({"id": gid.text.strip(), "name": gname.text.strip()})
-
-    print(f"참가격 총 {len(results)}개 품목")
-    return results
-
-
-# ── 3. 공통 유틸 ────────────────────────────────────────────────────
-
-def names_to_items(names: list[str], prefix: str) -> list[dict]:
-    """list[str] → [{'id': ..., 'name': ...}] 변환. id에 출처 prefix를 붙여 충돌 방지."""
-    return [{"id": f"{prefix}_{i}", "name": name} for i, name in enumerate(names)]
-
-
-def save_items_to_chroma(
-    items: list[dict],
-    collection_name: str = COLLECTION_NAME,
-    batch_size: int = 50,
-    path: str = CHROMA_DB_PATH,
-):
-    """items([{'id', 'name'}, ...])를 Chroma DB 컬렉션에 배치 저장."""
-    client = chromadb.PersistentClient(path=path)
-    collection = client.get_or_create_collection(name=collection_name)
-
-    names = [it["name"] for it in items]
-    ids = [it["id"] for it in items]
-
-    for i in tqdm(range(0, len(items), batch_size), desc=f"'{collection_name}' 저장 중"):
-        collection.add(
-            documents=names[i:i + batch_size],
-            ids=ids[i:i + batch_size],
-        )
-
-    print(f"Chroma DB '{collection_name}'에 누적 {collection.count()}개 품목 저장 완료")
-    return collection
-
-
-def delete_all_collections(path: str = CHROMA_DB_PATH, remove_files: bool = True):
-    """Chroma DB의 모든 컬렉션을 삭제 (초기화용).
-
-    remove_files=True(기본값)면 API로 컬렉션을 지운 뒤, chroma_db 폴더 자체를
-    통째로 삭제해서 orphan(고아) UUID 폴더까지 완전히 제거합니다.
+    - "오이랑" → "오이" + 조사 "랑" → 매칭
+    - "파이썬" → "파" + "이썬"(조사 아님) → 미매칭
     """
-    client = chromadb.PersistentClient(path=path)
-    collections = client.list_collections()
+    for token in re.split(r"[\s?!.,~]", query):
+        if not token.startswith(item):
+            continue
+        remainder = token[len(item):]
+        if remainder == "" or remainder in _PARTICLES:
+            return True
+    return False
 
-    if collections:
-        print(f"총 {len(collections)}개 컬렉션 삭제 시작...")
-        for col in collections:
-            name = col.name if hasattr(col, "name") else col
-            client.delete_collection(name=name)
-            print(f"  - '{name}' 삭제 완료")
-    else:
-        print("삭제할 컬렉션이 없습니다.")
-
-    if not remove_files:
-        print("모든 컬렉션 삭제 완료.")
-        return
-
-    # Windows에서는 sqlite 파일 핸들이 남아있으면 폴더 삭제가 막힐 수 있어서
-    # client 참조를 먼저 놓아준다.
-    del client
-    gc.collect()
-
-    if not os.path.exists(path):
-        print(f"'{path}' 폴더가 이미 없습니다.")
-        return
-
-    try:
-        shutil.rmtree(path)
-        print(f"'{path}' 폴더 자체를 완전히 삭제했습니다 (orphan 폴더 포함).")
-    except PermissionError as e:
-        print(f"[삭제 실패] 폴더가 다른 프로세스에 의해 사용 중입니다: {e}")
-        print("   VS Code 등에서 chroma_db 관련 파일/탭을 닫고 다시 시도해보세요.")
+def _keyword_router(query: str) -> ParseQuery:
+    """키워드 기반 Fallback 라우터 — LLM 오류 시 사용."""
+    found_items = [item for item in _FOOD_ITEMS if _item_in_query(item, query)]
+    has_price_keyword = any(kw in query for kw in _PRICE_KEYWORDS)
+    if found_items or has_price_keyword:
+        return ParseQuery(intent="price", items=found_items)
+    return ParseQuery(intent="off-topic", items=[])
 
 
-def test_similar_search(
-    query: str = "떡볶이",
-    n_results: int = 3,
-    path: str = CHROMA_DB_PATH,
-    collection_name: str = COLLECTION_NAME,
-):
-    """저장된 컬렉션에서 query와 비슷한 단어 n개 찾기 (description 있으면 같이 출력)."""
-    client = chromadb.PersistentClient(path=path)
-    collection = client.get_collection(collection_name)
-
-    results = collection.query(
-        query_texts=[query],
-        n_results=n_results,
-        include=["documents", "distances", "metadatas"],
-    )
-
-    print(f"── '{query}'와 비슷한 품목 {n_results}개 (collection: {collection_name}) ──")
-    for name, distance, id_, meta in zip(
-        results["documents"][0],
-        results["distances"][0],
-        results["ids"][0],
-        results["metadatas"][0],
-    ):
-        desc = (meta or {}).get("description", "")
-        desc_suffix = f" — {desc}" if desc else ""
-        print(f"  {name}  (id={id_}, distance={distance:.4f}){desc_suffix}")
-
-    return results
-
-
-# ── 4. 품목 설명 생성 및 재저장 ──────────────────────────────────────
-#     기존 문서(품목명)·임베딩은 그대로 두고, 각 품목에 description
-#     메타데이터만 추가로 채워 넣습니다 (검색 품질에 영향 없음).
-
-def _get_desc_llm() -> ChatUpstage:
+def _get_llm() -> ChatUpstage:
     return ChatUpstage(
-        api_key=UPSTAGE_API_KEY,
-        model=LLM_MODEL,
+        api_key=settings.upstage_api_key,
+        model=settings.llm_model,
         timeout=30,
         max_retries=2,
     )
 
 
-async def _generate_one_description(llm, semaphore: asyncio.Semaphore, name: str) -> tuple[str, str]:
-    async with semaphore:
-        try:
-            messages = [
-                SystemMessage(content=DESC_SYSTEM_PROMPT),
-                HumanMessage(content=name),
-            ]
-            result = await llm.ainvoke(messages)
-            desc = result.content.strip()
-        except Exception as e:
-            print(f"[설명 생성 실패] {name}: {e}")
-            desc = ""
-        return name, desc
+async def _llm_router(query: str) -> ParseQuery:
+    """Upstage Solar LLM 구조화 출력 라우터. 실패 시 keyword fallback."""
+    try:
+        llm = _get_llm()
+        structured_llm = llm.with_structured_output(ParseQuery)
+        messages = [
+            SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+            HumanMessage(content=f"사용자 질문: {query}"),
+        ]
+        result = await structured_llm.ainvoke(messages)
+        print(f"[Router] 의도: {result.intent}, 품목: {result.items}")
+        return result
+    except Exception as e:
+        print(f"[Router] LLM 오류 → keyword fallback: {e}")
+        return _keyword_router(query)
 
 
-async def _generate_descriptions_with_progress(
-    names: list[str], concurrency: int = 5
-) -> dict[str, str]:
-    """이름 목록 → {이름: 한줄설명} 매핑. 진행률을 tqdm으로 실시간 표시."""
-    llm = _get_desc_llm()
-    semaphore = asyncio.Semaphore(concurrency)
-
-    # asyncio.as_completed는 완료 순서를 알 수 없으니, 이름을 다시 매핑해두기 위해
-    # 태스크마다 (name, coroutine)을 묶어서 관리
-    tasks = [
-        asyncio.ensure_future(_generate_one_description(llm, semaphore, name))
-        for name in names
-    ]
-
-    descriptions: dict[str, str] = {}
-    with tqdm(total=len(tasks), desc="설명 생성 중") as pbar:
-        for coro in asyncio.as_completed(tasks):
-            name, desc = await coro
-            descriptions[name] = desc
-            pbar.update(1)
-            pbar.set_postfix_str(name[:10])  # 방금 처리한 품목명 우측에 표시
-
-    return descriptions
-
-
-def update_collection_with_descriptions(
-    collection_name: str = COLLECTION_NAME,
-    path: str = CHROMA_DB_PATH,
-    concurrency: int = 5,
-):
-    """컬렉션 안의 모든 품목에 대해 LLM으로 한줄 설명을 생성해 metadata로 재저장."""
-    if not UPSTAGE_API_KEY:
-        print("[설명 생성 실패] UPSTAGE_API_KEY가 .env에 없습니다.")
-        return None
-
-    client = chromadb.PersistentClient(path=path)
-    collection = client.get_collection(collection_name)
-
-    existing = collection.get(include=["documents"])
-    ids = existing["ids"]
-    names = existing["documents"]
-
-    print(f"총 {len(ids)}개 품목에 대한 설명 생성 시작 (동시 {concurrency}개)...")
-
-    unique_names = list(dict.fromkeys(names))  # 같은 이름 중복 호출 방지
-    descriptions = asyncio.run(
-        _generate_descriptions_with_progress(unique_names, concurrency=concurrency)
-    )
-
-    metadatas = [{"description": descriptions.get(name, "")} for name in names]
-
-    batch_size = 100
-    for i in tqdm(range(0, len(ids), batch_size), desc="Chroma metadata 업데이트 중"):
-        collection.update(
-            ids=ids[i:i + batch_size],
-            metadatas=metadatas[i:i + batch_size],
-        )
-
-    print(f"'{collection_name}' 설명 저장 완료 ({len(ids)}개).")
-    return collection
-
-
-# ── 5. 실행 ─────────────────────────────────────────────────────────
-
-def main():
-    if not check_env_vars():
-        sys.exit(1)
-
-    delete_all_collections()
-
-    print("\n── 결과 요약 ──")
-
-    kamis_names = get_kamis_names()
-    kamis_items = names_to_items(kamis_names, prefix="kamis")
-    save_items_to_chroma(kamis_items, collection_name=COLLECTION_NAME)
-
-    price_items = get_price_gokr_items()
-    price_items = [{"id": f"pricegokr_{it['id']}", "name": it["name"]} for it in price_items]
-    collection = save_items_to_chroma(price_items, collection_name=COLLECTION_NAME)
-
-    print(f"\n최종 컬렉션 '{COLLECTION_NAME}' 총 {collection.count()}개 품목")
-
-
-if __name__ == "__main__":
-    main()
-    update_collection_with_descriptions()   # 품목별 한줄 설명 생성 + 재저장 (LLM 호출, 시간 소요)
-    test_similar_search("떡볶이")
+async def router_node(state: AgentState) -> dict[str, Any]:
+    query = state["user_query"]
+    result = await _llm_router(query)
+    return {"route": result.intent, "items": result.items}

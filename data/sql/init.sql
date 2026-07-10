@@ -5,31 +5,47 @@
 
 
 -- ============================================================
--- [1] price_cache
---     역할: KAMIS API 장애 시 Fallback으로 사용하는 가격 캐시
---     갱신: get_raw_price 호출 성공 시마다 UPSERT
---     조회: API 실패 시 SELECT + is_fallback=True 플래그 반환
+-- [1] price_snapshot
+--     역할: KAMIS dailyPriceByCategoryList 응답을 그대로 적재하는 원본 스냅샷
+--          (Day3 설계의 price_cache를 대체 — 별도 Fallback 캐시 불필요.
+--           regday/fetched_at 자체가 신선도를 말해주므로 캐시 역할까지 흡수)
+--     갱신: GitHub Actions cron이 하루 1회, 부류코드(item_category_code)별로
+--          전체 품목 조회 후 UPSERT (개별 품목 코드 매핑 불필요)
+--     조회: 사용자 요청 경로는 이 테이블만 item_name으로 SELECT
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS price_cache (
-    item_name   TEXT        PRIMARY KEY,
-    source      TEXT        NOT NULL DEFAULT 'KAMIS',
-    category_code TEXT,
-    price_data  JSONB       NOT NULL,
-    cached_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS price_snapshot (
+    id                  BIGSERIAL   PRIMARY KEY,
+    item_category_code  TEXT        NOT NULL,  -- 부류코드 (예: "200"=채소류, 5~6개 고정값)
+    item_name           TEXT        NOT NULL,  -- 품목명 (예: "배추") — 사용자 질의 매칭 기준
+    item_code           TEXT        NOT NULL,  -- KAMIS 품목코드 (예: "211")
+    kind_name           TEXT        NOT NULL,  -- 품종명 (예: "봄(10kg(그물망 3포기))")
+    kind_code           TEXT        NOT NULL,
+    rank_name           TEXT        NOT NULL,  -- 등급 (예: "상품"/"중품")
+    rank_code           TEXT        NOT NULL,
+    unit                TEXT        NOT NULL,
+    -- dpr1=당일 dpr2=1일전 dpr3=1주일전 dpr4=2주일전 dpr5=1개월전 dpr6=1년전 dpr7=평년
+    -- 콤마 포함 가격 문자열("7,286") 또는 결측치("-") 그대로 저장
+    dpr1                TEXT,
+    dpr2                TEXT,
+    dpr3                TEXT,
+    dpr4                TEXT,
+    dpr5                TEXT,
+    dpr6                TEXT,
+    dpr7                TEXT,
+    regday              DATE        NOT NULL,  -- KAMIS 조회 기준일 (p_regday)
+    source              TEXT        NOT NULL DEFAULT 'KAMIS',
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (item_code, kind_code, rank_code, regday)
 );
 
--- price_data JSONB 구조 (RawPriceOutput 스키마와 1:1 대응)
--- {
---   "dpr3": "4,500",   -- 전주가 (원, 콤마 포함 문자열 · "-" = 결측)
---   "dpr5": "4,200",   -- 전월가 (원)
---   "dpr7": "2,800",   -- 평년가 (원, judge_price 기준가)
---   "unit": "100g"     -- 판매 단위 (예: "1kg", "1개", "100g")
--- }
+-- 사용자 질의 경로 조회 기준 (item_name으로 최신 regday 찾기)
+CREATE INDEX IF NOT EXISTS idx_price_snapshot_item_name
+    ON price_snapshot (item_name, regday DESC);
 
--- 오래된 캐시 조회 시 활용 (cached_at 기준 정렬)
-CREATE INDEX IF NOT EXISTS idx_price_cache_cached_at
-    ON price_cache (cached_at DESC);
+-- 신선도 확인 및 오래된 데이터 정리용
+CREATE INDEX IF NOT EXISTS idx_price_snapshot_fetched_at
+    ON price_snapshot (fetched_at DESC);
 
 
 -- ============================================================
@@ -63,28 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_query_log_route
 --     anon / authenticated 역할 차단 (보안 기본값)
 -- ============================================================
 
-ALTER TABLE price_cache ENABLE ROW LEVEL SECURITY;
-ALTER TABLE query_log   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_snapshot ENABLE ROW LEVEL SECURITY;
+ALTER TABLE query_log      ENABLE ROW LEVEL SECURITY;
 
 -- service_role은 RLS를 자동으로 우회하므로 별도 정책 불필요
 -- 아래는 명시적 차단 (anon 키로 직접 접근 방지)
-CREATE POLICY "deny_anon_price_cache" ON price_cache
+CREATE POLICY "deny_anon_price_snapshot" ON price_snapshot
     FOR ALL TO anon USING (FALSE);
 
 CREATE POLICY "deny_anon_query_log" ON query_log
     FOR ALL TO anon USING (FALSE);
 
-
 -- ============================================================
--- [4] 초기 데이터 (선택 — 테스트용 샘플 5개)
---     Day2 Mock 픽스처와 동일한 품목으로 구성
+-- [4] 초기 데이터
+--     실데이터는 GitHub Actions cron 적재 스크립트(추후 작성)가 채움.
+--     이 스키마 파일에는 샘플 INSERT 없음 — price_snapshot 컬럼이
+--     KAMIS 원본 응답 그대로라 손으로 채운 샘플이 실데이터와 어긋날 위험이 큼.
 -- ============================================================
-
-INSERT INTO price_cache (item_name, source, price_data, cached_at)
-VALUES
-    ('상추', 'KAMIS', '{"dpr1":"4500","dpr5":"3800","dpr7":"2800","unit":"100g"}',  NOW()),
-    ('배추', 'KAMIS', '{"dpr1":"2100","dpr5":"2000","dpr7":"2300","unit":"1포기"}', NOW()),
-    ('오이', 'KAMIS', '{"dpr1":"1200","dpr5":"1100","dpr7":"1400","unit":"1개"}',   NOW()),
-    ('당근', 'KAMIS', '{"dpr1":"2800","dpr5":"2600","dpr7":"3100","unit":"1개"}',   NOW()),
-    ('깻잎', 'KAMIS', '{"dpr1":"-",   "dpr5":"1500","dpr7":"1300","unit":"100g"}',  NOW())
-ON CONFLICT (item_name) DO NOTHING;

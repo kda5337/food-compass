@@ -8,4 +8,6 @@ class AgentState(TypedDict, total=False):
     items: List[str]
     price_data: List[Dict[str, Any]]
     judgment: List[Dict[str, Any]]
+    knowledge_result: str
+    substitutes: List[str]
     answer: str

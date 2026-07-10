@@ -32,10 +32,11 @@
 > Day2에 `price_cache` 테이블 및 `app/tools/price_cache.py` 구현 완료.
 > Day3에서 실제 KAMIS 호출 흐름에 연결.
 
-- [ ] `get_raw_price_node`에 Supabase Fallback 연결
-  - **흐름**: KAMIS 호출 성공 → `save_price_cache()` 캐시 갱신 → 결과 반환
-  - **흐름**: KAMIS 호출 실패 → `get_price_cache()` 캐시 조회 → `is_fallback=True` 플래그와 함께 반환
+- [x] `get_raw_price_node`에 Supabase Fallback 연결 (최소 구현 — mock 데이터 기준)
+  - **흐름**: mock 조회 성공 → `save_price_cache()` 캐시 갱신 → 결과 반환 (실제 Supabase 저장 확인 완료)
+  - **흐름**: mock에 없는 품목 → `get_price_cache()` 캐시 조회 → `is_fallback=True` 플래그와 함께 반환
   - **파일**: `app/tools/kamis.py`
+  - **참고**: 실제 KAMIS API 실패 시나리오(§1 완료 후)로는 아직 미검증 — 팀원 KAMIS 실연동 후 재확인 필요
 
 - [ ] Fallback 사용 시 사용자 고지 문구 추가
   - **내용**: 답변 생성 시 `is_fallback=True`이면 "저장된 최신 데이터 기준입니다" 문구 포함
@@ -74,7 +75,7 @@
 
 ## 4. 라우팅 확장 — 4분류 + item 세분화
 
-- [ ] `ROUTER_SYSTEM_PROMPT` 4분류로 업데이트
+- [v] `ROUTER_SYSTEM_PROMPT` 4분류로 업데이트
   - **현재**: price / off-topic 2분류
   - **변경**: price / knowledge / hybrid / off-topic 4분류
     - `price`: 가격·시세 조회만 필요한 질문 ("상추 얼마야?")
@@ -90,11 +91,11 @@
     - MVP 범위에서 품목명만으로 충분하면 현 구조 유지
   - **파일**: `app/schemas/RouterOutput.py`
 
-- [ ] `ParseQuery` intent Literal 업데이트
+- [v] `ParseQuery` intent Literal 업데이트
   - **내용**: `"knowledge"`, `"hybrid"` 추가
   - **파일**: `app/schemas/RouterOutput.py`
 
-- [ ] LangGraph 조건부 엣지 4분류로 확장
+- [v] LangGraph 조건부 엣지 4분류로 확장
   - **내용**:
     - `knowledge` → `search_knowledge` 노드 → 답변 생성
     - `hybrid` → `get_raw_price` → `judge_price` → `search_substitute`(비쌈 시) → 답변 생성
@@ -106,7 +107,7 @@
 
 ## 5. LLM 연동 테스트 및 작동 확인
 
-- [ ] Upstage Solar LLM 단독 호출 테스트
+- [v] Upstage Solar LLM 단독 호출 테스트
   - **내용**: `ChatUpstage(api_key=...).invoke([HumanMessage(content="상추 비싸?")])` 응답 확인
   - **확인 항목**: API 키 유효성, 모델명(`solar-pro3`) 정상 응답, 레이턴시
   - **파일**: `tests/test_llm.py` 또는 `scripts/check_llm.py`
@@ -119,7 +120,7 @@
     - "안녕하세요" → `off-topic`
   - **기준**: 각 케이스 5회 중 4회 이상 정확 분류
 
-- [ ] LLM 오류 시 keyword fallback 작동 확인
+- [v] LLM 오류 시 keyword fallback 작동 확인
   - **내용**: API 키를 임시로 빈 값으로 설정 → keyword router로 fallback 되는지 확인
   - **파일**: `tests/test_router.py` (기존 `TestRouterNode` 활용)
 
@@ -127,11 +128,11 @@
 
 ## 6. FastAPI + SSE 구현 및 localhost 테스트
 
-- [ ] FastAPI 앱 구조 완성
+- [v] FastAPI 앱 구조 완성
   - **내용**: `app/api/main.py` FastAPI 인스턴스 + CORS 설정 + 라우터 등록
   - **파일**: `app/api/main.py`, `app/api/routes.py`
 
-- [ ] `/chat` POST 엔드포인트 작성
+- [v] `/chat` POST 엔드포인트 작성
   - **요청**: `{"query": str}`
   - **응답**: SSE 스트림 (`text/event-stream`)
   - **SSE 이벤트 구조**:
@@ -144,19 +145,20 @@
     ```
   - **Tool**: `sse-starlette`
 
-- [ ] localhost 서버 실행 및 직접 테스트
+- [v] localhost 서버 실행 및 직접 테스트
   - **실행 명령어**:
     ```
     $env:PYTHONUTF8=1
     uvicorn app.api.main:app --reload --port 8000
     ```
   - **테스트 시나리오**:
-    - [ ] "상추 지금 비싸?" → price 경로 SSE 응답 확인
-    - [ ] "상추 비싸면 대체품 알려줘" → hybrid 경로 응답 확인
-    - [ ] "안녕하세요" → off-topic 거절 응답 확인
-  - **응답 시간 측정**: 첫 SSE 이벤트 3초 이내 / 전체 10초 이내
+    - [v] "상추 지금 비싸?" → price 경로 SSE 응답 확인 (임시 포트 8010에서 검증, 실제 실행 시 8000 사용)
+    - [ ] "상추 비싸면 대체품 알려줘" → hybrid 경로 응답 확인 (라우팅·그래프 배선은 완료, `search_substitute` stub이라 대체품 목록은 항상 빈 값 — 팀원 ChromaDB 연동 후 실제 localhost SSE 테스트로 재확인 필요)
+    - [v] "안녕하세요" → off-topic 거절 응답 확인
+  - **응답 시간 측정**: 첫 SSE 이벤트 3초 이내 / 전체 10초 이내 (수동 확인 결과 즉시 응답, 정식 측정은 미실시)
+  - **주의**: 로컬 환경에 포트 8000을 이미 점유 중인 무관한 프로세스("Lumi Agent API")가 있어 실행 전 확인 필요
 
-- [ ] `/health` GET 엔드포인트 추가
+- [v] `/health` GET 엔드포인트 추가
   - **내용**: 서버 상태 + DB 연결 상태 반환 (`{"status": "ok", "db": "connected"}`)
   - **활용**: Day4 배포 후 헬스체크용
 
@@ -176,7 +178,7 @@
 
 ## 8. 테스트 전체 통과 확인
 
-- [ ] 기존 23개 테스트 전체 통과 유지
+- [v] 기존 23개 테스트 전체 통과 유지 (현재 28개 전체 통과)
 - [ ] 신규 테스트 작성 및 통과
   - `tests/test_kamis_api.py`: KAMIS 실 API + Fallback
   - `tests/test_llm.py`: LLM 라우터 분류 정확도
