@@ -65,6 +65,7 @@ def _item_in_query(item: str, query: str) -> bool:
 async def _mock_router(query: str) -> ParseQuery:
     '''
     키워드 기반 Mock 라우터 — Day3에 실제 Upstage Solar LLM 호출로 교체.
+    """키워드 기반 Mock 라우터 — Day3에 실제 Upstage Solar LLM 호출로 교체."""
     found_items = [item for item in _FOOD_ITEMS if _item_in_query(item, query)]
     has_price_keyword = any(kw in query for kw in _PRICE_KEYWORDS)
 
