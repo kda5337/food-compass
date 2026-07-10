@@ -46,7 +46,6 @@ _PARTICLES = {
     "까지", "부터", "마저", "조차", "이며", "며", "이고", "고",
 }
 
-
 def _item_in_query(item: str, query: str) -> bool:
     """품목명이 공백 분리 토큰 안에서 온전히 포함되는지 확인.
 

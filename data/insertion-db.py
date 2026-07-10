@@ -184,7 +184,7 @@ def delete_all_collections(path: str = CHROMA_DB_PATH):
 
 
 def test_similar_search(
-    query: str = "떡볶이",
+    query: str = "양배추",
     n_results: int = 3,
     path: str = CHROMA_DB_PATH,
     collection_name: str = COLLECTION_NAME,
