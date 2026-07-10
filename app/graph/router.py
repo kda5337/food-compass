@@ -45,8 +45,8 @@ def _item_in_query(item: str, query: str) -> bool:
             return True
     return False
 
-# fallback용도로 남겨둠
-async def _mock_router(query: str) -> ParseQuery:
+def _keyword_router(query: str) -> ParseQuery:
+    """키워드 기반 Fallback 라우터 — LLM 오류 시 사용."""
     found_items = [item for item in _FOOD_ITEMS if _item_in_query(item, query)]
     has_price_keyword = any(kw in query for kw in _PRICE_KEYWORDS)
     if found_items or has_price_keyword:
@@ -77,7 +77,7 @@ async def _llm_router(query: str) -> ParseQuery:
         return result
     except Exception as e:
         print(f"[Router] LLM 오류 → keyword fallback: {e}")
-        return _mock_router(query)
+        return _keyword_router(query)
 
 
 async def router_node(state: AgentState) -> dict[str, Any]:

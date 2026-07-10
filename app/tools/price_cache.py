@@ -28,6 +28,16 @@ def _get_conn():
     )
 
 
+def ping() -> bool:
+    """DB 연결 가능 여부만 확인 (헬스체크용)."""
+    try:
+        conn = _get_conn()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
 def save_price_cache(item_name: str, price_data: RawPriceOutput, source: str = "KAMIS") -> None:
     """가격 조회 성공 시 price_cache에 UPSERT."""
     conn = _get_conn()
