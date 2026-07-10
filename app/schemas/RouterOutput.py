@@ -12,17 +12,19 @@ class ParseQuery(BaseModel):
     """Router LLM이 반환해야 하는 구조화 출력.
     parse_query 구조화 출력 스키마
 
-    route:
-      - price: 농수산물/식품 가격 조회 질문
-      - off-topic: 가격 조회와 무관한 질문
+    intent:
+      - price: 가격·시세 조회만 필요 (예: "상추 얼마야?")
+      - knowledge: 가격 무관, 보관법·대체품 등 지식만 필요 (예: "상추 보관법 알려줘")
+      - hybrid: 가격 판정 + 비쌈 시 대체품 추천 복합 (예: "상추 비싸면 대체품 알려줘")
+      - off-topic: 가격/식품과 무관한 질문
 
     items:
-      - route가 price이면 조회 대상 품목 리스트
-      - route가 off-topic이면 빈 리스트 권장
+      - off-topic이 아니면 조회/언급 대상 품목 리스트
+      - off-topic이면 빈 리스트 권장
     """
-    
-    intent: Literal["price", "off-topic"] = Field(
-        ..., description="질문 분류 결과: 가격 판단 요청이면 'price', 그 외 잡담/무관 질문이면 'off-topic'"
+
+    intent: Literal["price", "knowledge", "hybrid", "off-topic"] = Field(
+        ..., description="질문 분류 결과: price/knowledge/hybrid/off-topic 중 하나"
     )
     items: list[str] = Field(
         default_factory=list,
