@@ -1,23 +1,25 @@
 from __future__ import annotations
+
 import re
-from typing import Any, Set
+from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_upstage import ChatUpstage
 
-from .state import AgentState
 from app.core.config import settings
 from app.prompts.prompts import ROUTER_SYSTEM_PROMPT
 from app.schemas import ParseQuery
 
+from .state import AgentState
+
 # 가격 관련 키워드 (keyword fallback 전용)
-_PRICE_KEYWORDS: Set[str] = {
+_PRICE_KEYWORDS: set[str] = {
     "비싸", "비싼", "싸다", "저렴", "시세", "가격", "얼마", "원",
     "사도", "사야", "구매", "살만", "요즘", "지금", "할만", "비쌈", "쌈",
 }
 
 # 식품 품목 목록 (keyword fallback 전용)
-_FOOD_ITEMS: Set[str] = {
+_FOOD_ITEMS: set[str] = {
     "상추", "배추", "오이", "당근", "깻잎", "파", "마늘", "감자", "고추",
     "양파", "무", "시금치", "브로콜리", "양배추", "애호박", "가지", "토마토",
     "사과", "딸기", "바나나", "수박", "참외", "포도", "복숭아",

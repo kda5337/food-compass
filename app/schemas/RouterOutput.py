@@ -1,5 +1,6 @@
 """LangGraph 노드 간에 주고받는 Pydantic 스키마 정의."""
 from typing import Literal
+
 from pydantic import BaseModel, Field
 
 

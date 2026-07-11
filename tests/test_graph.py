@@ -1,4 +1,3 @@
-import pytest
 
 from app.graph import compiled_graph
 

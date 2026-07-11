@@ -1,4 +1,3 @@
-import pytest
 
 from app.tools.judge import judge_price, parse_price
 

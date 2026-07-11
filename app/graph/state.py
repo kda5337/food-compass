@@ -1,13 +1,14 @@
 from __future__ import annotations
-from typing import Any, Dict, List, TypedDict
+
+from typing import Any, TypedDict
 
 
 class AgentState(TypedDict, total=False):
     user_query: str
     route: str
-    items: List[str]
-    price_data: List[Dict[str, Any]]
-    judgment: List[Dict[str, Any]]
+    items: list[str]
+    price_data: list[dict[str, Any]]
+    judgment: list[dict[str, Any]]
     knowledge_result: str
-    substitutes: List[str]
+    substitutes: list[str]
     answer: str

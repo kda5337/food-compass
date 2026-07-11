@@ -109,4 +109,4 @@ def get_latest_prices(item_name: str) -> list[dict[str, Any]]:
     finally:
         conn.close()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(zip(columns, row, strict=True)) for row in rows]

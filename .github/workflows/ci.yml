@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main, jaewoo]
+  pull_request:
+    branches: [main]
+
+env:
+  UV_PYTHON: "3.12"
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev
+      - name: ruff check (blocking)
+        run: uv run ruff check app/ frontend/ tests/
+      - name: ruff format check (non-blocking — repo has pre-existing formatting debt, fixing incrementally)
+        run: uv run ruff format --check app/ frontend/ tests/
+        continue-on-error: true
+
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev
+      - name: mypy (non-blocking — pre-existing findings not yet triaged, mostly LangGraph typing friction)
+        run: uv run mypy app/
+        continue-on-error: true
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks (OSS, no license required)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" ghcr.io/gitleaks/gitleaks:latest \
+            git -v --log-opts="--all" /repo
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev
+      - name: Run pytest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          UPSTAGE_API_KEY: ${{ secrets.UPSTAGE_API_KEY }}
+          KAMIS_CERT_KEY: ${{ secrets.KAMIS_CERT_KEY }}
+          KAMIS_CERT_ID: ${{ secrets.KAMIS_CERT_ID }}
+        run: uv run pytest
+
+  # coderabbit-review:
+  #   name: CodeRabbit AI review
+  #   if: github.event_name == 'pull_request'
+  #   needs: [lint, typecheck, secret-scan, test]
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #     pull-requests: write
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  #     - name: Install CodeRabbit CLI
+  #       run: curl -fsSL https://cli.coderabbit.ai/install.sh | sh
+  #     - name: Authenticate
+  #       env:
+  #         CODERABBIT_API_KEY: ${{ secrets.CODERABBIT_API_KEY }}
+  #       run: coderabbit auth login --api-key "$CODERABBIT_API_KEY"
+  #     - name: Review PR diff against base branch
+  #       env:
+  #         CODERABBIT_API_KEY: ${{ secrets.CODERABBIT_API_KEY }}
+  #       run: coderabbit review --plain --base "${{ github.event.pull_request.base.ref }}"
+  #
+  # 비활성화 사유(2026-07-11): CLI 인증에는 Agentic API key가 필요한데 이건 유료 플랜에서만 발급됨.
+  # 이 repo가 본인 소유가 아니라 결제를 진행하기 어려운 상황이라 임시로 잠금. 유료 플랜 확보되면 주석 해제.

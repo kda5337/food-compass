@@ -1,11 +1,13 @@
 from __future__ import annotations
-from typing import List, Literal
+
+from typing import Literal
+
 from pydantic import BaseModel
 
 
 class RouterOutput(BaseModel):
     route: Literal["price", "off-topic"]
-    items: List[str]
+    items: list[str]
 
 
 class RawPriceInput(BaseModel):
@@ -32,5 +34,5 @@ class JudgePriceOutput(BaseModel):
 
 
 class SubstituteOutput(BaseModel):
-    substitutes: List[str]
+    substitutes: list[str]
     source: str
