@@ -201,6 +201,13 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
             ]
         )
         answer = response.content
+        # [2026-07-14 추가] 프롬프트에 "품목명을 반드시 언급할 것"을 지시해도 LLM이 가끔
+        # 생략하는 경우가 있음(자유 문장 생성이라 확률적) — 어떤 품목에 대한 답변인지는
+        # 사용자가 항상 알 수 있어야 하는 하드 요구사항이라, 프롬프트 지시만으론 보장이 안 돼서
+        # 코드에서 직접 검증하고 누락 시 이미 품목명을 포함하는 템플릿 답변으로 폴백시킴.
+        if not any(j["item_name"] in answer for j in judgments):
+            print(f"[generate_answer_node] LLM 답변에 품목명 누락, 템플릿 답변으로 폴백: {answer!r}")
+            answer = _template_answer(judgments, substitutes)
     except Exception as e:
         # 함수 docstring에 원래 "실패 시 고정 템플릿으로 폴백"이라고 적혀 있었는데
         # 실제로는 이 폴백이 연결돼 있지 않았음 — _template_answer()도 같이 살려서 연결함.
