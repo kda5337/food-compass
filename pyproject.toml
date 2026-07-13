@@ -21,6 +21,7 @@ dependencies = [
     "tenacity>=9.0.0",         # Day3/Day5: KAMIS·참가격 API 실패 시 재시도(Retry) 로직
     "litellm>=1.50.0",         # 기술스택 명시된 LLMOps 모델 게이트웨이
     "psycopg2-binary>=2.9.12",
+    "sentence-transformers>=3.0.0",
 ]
 
 [dependency-groups]

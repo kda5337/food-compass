@@ -83,7 +83,7 @@ def check_env_vars() -> bool:
 # ── 1. KAMIS (농수산물 + 축산물) ────────────────────────────────────────
 def get_kamis_names() -> list[str]:
     """KAMIS productInfo(5개 부류) + dailySalesList(축산물)을 합쳐서 전체 품목명 반환."""
-    url = "https://www.kamis.or.kr/service/price/xml.do"
+    url = "http://www.kamis.or.kr/service/price/xml.do"
     print("── KAMIS (농수산물 품목 리스트) ──")
 
     # 1-1. productInfo — 식량작물/채소류/특용작물/과일류/수산물
@@ -404,5 +404,5 @@ def main():
     print(f"\n최종 컬렉션 '{COLLECTION_NAME}' 총 {collection.count()}개 품목")
 
 if __name__ == "__main__":
-    #main()
+    main()
     test_similar_search("사과")
