@@ -8,7 +8,10 @@ services:
     env_file:
       - .env
     volumes:
-      - ./chroma_db:/app/chroma_db
+      # app/tools/vector_store.py, data/insertion-chroma-db.py 둘 다 CHROMA_DB_PATH="./data/chroma_db"를
+      # 씀 — 예전엔 최상위 chroma_db/ 폴더를 마운트했는데, 실제 코드가 보는 경로랑 달라서
+      # 컨테이너 안에서 컬렉션을 못 찾고 있었음(2번 이슈 원인). 실제 데이터 경로로 수정.
+      - ./data/chroma_db:/app/data/chroma_db
     restart: unless-stopped
 
   frontend:

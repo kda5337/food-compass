@@ -12,8 +12,10 @@ import gc
 import shutil
 import asyncio
 import chromadb
+import httpx
 import requests
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -21,6 +23,11 @@ from collections import defaultdict
 from langchain_upstage import ChatUpstage
 from langchain_core.messages import HumanMessage, SystemMessage
 from chromadb.utils import embedding_functions
+
+# [2026-07-13 수정] KAMIS 요청에 app/tools/kamis_client.py의 legacy SSL 컨텍스트를 재사용하기 위해
+# 프로젝트 루트를 sys.path에 추가 (scripts/fetch_kamis_snapshot.py와 동일한 패턴)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app.tools.kamis_client import _legacy_ssl_context  # noqa: E402
 
 load_dotenv()  # .env 파일을 읽어 os.environ에 반영
 
@@ -82,7 +89,7 @@ def check_env_vars() -> bool:
 # ── 1. KAMIS (농수산물 + 축산물) ────────────────────────────────────────
 def get_kamis_names() -> list[str]:
     """KAMIS productInfo(5개 부류) + dailySalesList(축산물)을 합쳐서 전체 품목명 반환."""
-    url = "http://www.kamis.or.kr/service/price/xml.do"
+    url = "https://www.kamis.or.kr/service/price/xml.do"
     print("── KAMIS (농수산물 품목 리스트) ──")
 
     # 1-1. productInfo — 식량작물/채소류/특용작물/과일류/수산물
@@ -92,7 +99,13 @@ def get_kamis_names() -> list[str]:
         "p_cert_id": KAMIS_CERT_ID,
         "p_returntype": "json",
     }
-    res = requests.get(url, params=params_product_info, timeout=10)
+    # [2026-07-13 수정] KAMIS 서버가 legacy TLS 설정이라 requests 기본 SSL 컨텍스트로는
+    # handshake 단계에서 계속 renegotiation을 요구하다 타임아웃남(SSLError/응답 없음).
+    # "KAMIS가 막혔다"고 보였던 원인이 이거였음 — 완전 차단이 아니라 완화된 SSL 컨텍스트 없이
+    # 접속하는 모든 클라이언트(requests, curl, 브라우저 등)가 다 실패하는 것.
+    # app/tools/kamis_client.py에서 이미 같은 문제를 httpx + _legacy_ssl_context()로 해결해둔 게
+    # 있어서(그쪽은 실제로 지금도 정상 동작 확인함) 그대로 재사용함. timeout도 그쪽과 동일하게 15초로 맞춤.
+    res = httpx.get(url, params=params_product_info, timeout=15, verify=_legacy_ssl_context())
     data = res.json()
 
     error_code = data.get("error_code")
@@ -124,7 +137,8 @@ def get_kamis_names() -> list[str]:
         "p_cert_id": KAMIS_CERT_ID,
         "p_returntype": "json",
     }
-    res = requests.get(url, params=params_daily_sales, timeout=10)
+    # [2026-07-13 수정] 바로 위 productInfo 호출과 같은 이유로 requests → httpx(legacy SSL) 전환
+    res = httpx.get(url, params=params_daily_sales, timeout=15, verify=_legacy_ssl_context())
     data = res.json()
     items = data.get("price", data.get("data", []))
 

@@ -94,6 +94,9 @@ def judge_price_node(state: AgentState) -> dict[str, Any]:
                 # 답변 생성 단계에서 실제 금액을 지어내지 않도록 조회된 값 그대로 전달
                 "today_price": item.get("dpr1"),
                 "unit": item.get("unit"),
+                # [2026-07-14 추가] today_price가 fallback(며칠 전 값)인 경우 답변에서
+                # "N일 전 기준"으로 밝히기 위해 전달 — "당일"이면 별도 표기 안 함
+                "price_as_of": item.get("price_as_of"),
             }
         )
     return {"judgment": judgments}

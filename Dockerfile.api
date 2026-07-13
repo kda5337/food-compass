@@ -7,7 +7,8 @@ WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=3.12
+    UV_PYTHON=3.12 \
+    PYTHONUNBUFFERED=1
 
 # 의존성만 먼저 설치하는 레이어 — app/ 코드만 바뀌었을 땐 이 레이어가 캐시돼서 재빌드 안 됨
 COPY pyproject.toml uv.lock ./

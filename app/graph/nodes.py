@@ -1,51 +1,34 @@
 from __future__ import annotations
-import os
+
 from typing import Any
-from langchain_upstage import ChatUpstage
-from app.core.config import settings
-from .state import AgentState
+
 from langchain_core.messages import HumanMessage, SystemMessage
-from chromadb.utils import embedding_functions
-from app.tools.vector_store import get_collection
+from langchain_upstage import ChatUpstage
+
+from app.core.config import settings
 from app.prompts.prompts import (
     ANSWER_GENERATION_SYSTEM_PROMPT,
     ANSWER_MONTH_DIFF_SUFFIX,
     ANSWER_NO_DATA,
     ANSWER_PRICE_LINE,
+    ANSWER_PRICE_WITH_AMOUNT_AS_OF_LINE,
     ANSWER_PRICE_WITH_AMOUNT_LINE,
     ANSWER_SUBSTITUTE_LINE,
     ANSWER_UNSUPPORTED_LINE,
     ANSWER_WEEK_DIFF_SUFFIX,
     KNOWLEDGE_STUB_RESPONSE,
     OFFTOPIC_RESPONSE,
-    ANSWER_GENERATION_SYSTEM_PROMPT
 )
 from app.tools.judge import parse_price
+from app.tools.vector_store import get_collection
 
 from .state import AgentState
 
 _UNSUPPORTED_STATUS = "미지원"
-
-
-def _get_llm() -> ChatUpstage:
-    return ChatUpstage(
-        api_key=settings.upstage_api_key,
-        model=settings.llm_model,
-        timeout=30,
-        max_retries=2,
-    )
-
-import chromadb
-
-
 # 비쌈 판정 시에만 hybrid 경로에서 대체품 검색으로 분기 (judge_price 결과 기준)
 _EXPENSIVE_STATUS = "비쌈"
 _N_SUBSTITUTES = 3
-CHROMA_DB_PATH = "./data/chroma_db"
-COLLECTION_NAME = "all_food_products"
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "jhgan/ko-sroberta-multitask")
-korean_embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name=EMBEDDING_MODEL_NAME)
+
 
 def _get_llm() -> ChatUpstage:
     return ChatUpstage(
@@ -54,6 +37,8 @@ def _get_llm() -> ChatUpstage:
         timeout=30,
         max_retries=2,
     )
+
+
 llm = _get_llm()
 
 
@@ -96,6 +81,7 @@ def search_substitute_node(state: AgentState) -> dict[str, Any]:
     for document, meta in zip(
         results["documents"][0],
         results["metadatas"][0],
+        strict=True,
     ):
         original_name = (meta or {}).get("name")
         name = original_name or document
@@ -121,10 +107,19 @@ def _template_answer(judgments: list[dict], substitutes: list[str]) -> str:
             continue
         sign = "+" if j["diff_pct"] >= 0 else ""
         if parse_price(j.get("today_price", "-")) is not None:
-            line = ANSWER_PRICE_WITH_AMOUNT_LINE.format(
-                item=j["item_name"], price=j["today_price"], unit=j.get("unit", "-"),
-                sign=sign, diff=j["diff_pct"], status=j["status"],
-            )
+            price_as_of = j.get("price_as_of")
+            # [2026-07-14 추가] _price_facts()와 동일한 이유로, fallback 값을 쓴 경우
+            # "N일 전 기준" 문구가 붙은 별도 템플릿 사용
+            if price_as_of not in (None, "당일"):
+                line = ANSWER_PRICE_WITH_AMOUNT_AS_OF_LINE.format(
+                    item=j["item_name"], as_of=price_as_of, price=j["today_price"], unit=j.get("unit", "-"),
+                    sign=sign, diff=j["diff_pct"], status=j["status"],
+                )
+            else:
+                line = ANSWER_PRICE_WITH_AMOUNT_LINE.format(
+                    item=j["item_name"], price=j["today_price"], unit=j.get("unit", "-"),
+                    sign=sign, diff=j["diff_pct"], status=j["status"],
+                )
         else:
             line = ANSWER_PRICE_LINE.format(item=j["item_name"], sign=sign, diff=j["diff_pct"], status=j["status"])
         week_diff = j.get("week_diff_pct")
@@ -148,7 +143,13 @@ def _price_facts(judgments: list[dict], substitutes: list[str]) -> str:
             continue
         sign = "+" if j["diff_pct"] >= 0 else ""
         if parse_price(j.get("today_price", "-")) is not None:
-            line = f"- {j['item_name']}: 현재가 {j['today_price']}원/{j.get('unit', '-')}, 평년 대비 {sign}{j['diff_pct']}% ({j['status']})"
+            # [2026-07-14 추가] today_price가 당일가 결측으로 며칠 전 값(dpr2~dpr5 fallback)을
+            # 대신 쓴 경우, "현재가"라고만 하면 사용자가 오늘 가격으로 오해할 수 있어
+            # price_as_of("1주일전" 등)를 그대로 문구에 노출 — LLM이 마치 당일가인 것처럼
+            # 말하지 않도록 데이터 단계에서부터 명시.
+            price_as_of = j.get("price_as_of")
+            price_label = "현재가" if price_as_of in (None, "당일") else f"{price_as_of} 가격(당일 데이터 미반영)"
+            line = f"- {j['item_name']}: {price_label} {j['today_price']}원/{j.get('unit', '-')}, 평년 대비 {sign}{j['diff_pct']}% ({j['status']})"
         else:
             line = f"- {j['item_name']}: 평년 대비 {sign}{j['diff_pct']}% ({j['status']}) (현재가 데이터 없음 — 금액을 지어내지 말 것)"
         week_diff = j.get("week_diff_pct")
@@ -177,33 +178,36 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     if not judgments:
         return {"answer": ANSWER_NO_DATA}
 
-    lines = []
-    for j in judgments:
-        item = j["item_name"]
-        status = j["status"]
-        diff = j["diff_pct"]
-        sign = "+" if diff >= 0 else ""
-        lines.append(ANSWER_PRICE_LINE.format(item=item, sign=sign, diff=diff, status=status))
-
-    substitutes = state.get("substitutes")
+    substitutes = state.get("substitutes") or []
     print(f"[generate_answer_node] substitutes: {substitutes}")
-    if substitutes:
-        lines.append(ANSWER_SUBSTITUTE_LINE.format(substitutes=", ".join(substitutes)))
+
+    # [2026-07-14 수정] 기존엔 여기서 ANSWER_PRICE_LINE만으로 직접 lines를 만들어서
+    # today_price/unit(실제 가격 금액), week/month 대비 추세가 LLM 컨텍스트에 전혀 안 들어가고 있었음
+    # (판정 상태 문구만 들어감 — "가격 정보가 답변에 안 나온다"는 문제의 원인).
+    # 이미 있던 _price_facts()가 정확히 이 데이터를 다 채워서 만들어주는 함수인데 호출이 안 되고
+    # 있었던 것 — 이제 그대로 재사용.
     context_parts = [
         f"사용자 질문: {state.get('user_query', '')}",
         "가격 판정 결과:",
-        "\n".join(lines),
+        _price_facts(judgments, substitutes),
     ]
-    
     context = "\n".join(context_parts)
 
-    response = llm.invoke(
-        [
-            SystemMessage(content=ANSWER_GENERATION_SYSTEM_PROMPT),
-            HumanMessage(content=context),
-        ]
-    )
-    return {"answer": response.content}
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(content=ANSWER_GENERATION_SYSTEM_PROMPT),
+                HumanMessage(content=context),
+            ]
+        )
+        answer = response.content
+    except Exception as e:
+        # 함수 docstring에 원래 "실패 시 고정 템플릿으로 폴백"이라고 적혀 있었는데
+        # 실제로는 이 폴백이 연결돼 있지 않았음 — _template_answer()도 같이 살려서 연결함.
+        print(f"[generate_answer_node] LLM 호출 실패, 템플릿 답변으로 폴백: {e!r}")
+        answer = _template_answer(judgments, substitutes)
+
+    return {"answer": answer}
 
 
 def generate_offtopic_node(state: AgentState) -> dict[str, Any]:

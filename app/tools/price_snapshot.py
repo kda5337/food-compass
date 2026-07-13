@@ -110,3 +110,27 @@ def get_latest_prices(item_name: str) -> list[dict[str, Any]]:
         conn.close()
 
     return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+def delete_old_snapshots(retention_days: int = 7) -> int:
+    """[2026-07-14 추가] regday가 (오늘 - retention_days)보다 오래된 row 삭제, 삭제 건수 반환.
+
+    `get_latest_prices()`는 항상 MAX(regday)만 조회하므로 오래된 row가 남아있어도 판정
+    결과 자체엔 영향 없지만(§ 확인 완료), 매일 쌓이는 걸 무한정 방치하지 않도록 최근
+    N일치만 유지 — 동시에 최근 며칠 치는 남겨서 "특정 날짜 수집분이 이상했다" 같은
+    디버깅은 계속 가능하게 함(예: 축산물 제외 dpr1/dpr2 결측 이슈도 스냅샷이 남아있어서
+    바로 진단할 수 있었음).
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM price_snapshot WHERE regday < CURRENT_DATE - (%s * INTERVAL '1 day');",
+            (retention_days,),
+        )
+        conn.commit()
+        deleted = cur.rowcount
+        cur.close()
+    finally:
+        conn.close()
+    return deleted
