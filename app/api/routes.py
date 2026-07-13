@@ -18,6 +18,10 @@ _NEXT_STEP_STATUS = {
     "get_raw_price": "판정 중...",
 }
 
+# LLM이 실제로 답변을 생성하는 노드 — 이 노드에서 나오는 토큰만 실시간으로 흘려보냄
+# (router의 구조화 출력 호출도 LLM 토큰을 만들지만 그건 사용자에게 보여줄 답변이 아님)
+_STREAMING_ANSWER_NODES = {"generate_answer"}
+
 
 class ChatRequest(BaseModel):
     query: str
@@ -33,9 +37,19 @@ async def chat(request: ChatRequest):
         yield _sse("status", {"step": "의도 분류 중..."})
 
         state: dict = {"user_query": request.query}
-        async for chunk in compiled_graph.astream(state, stream_mode="updates"):
-            for node_name, node_output in chunk.items():
+        async for mode, payload in compiled_graph.astream(
+            state, stream_mode=["updates", "messages"]
+        ):
+            if mode == "messages":
+                message_chunk, metadata = payload
+                if metadata.get("langgraph_node") in _STREAMING_ANSWER_NODES and message_chunk.content:
+                    yield _sse("token", {"delta": message_chunk.content})
+                continue
+
+            # mode == "updates": 노드 하나가 완료될 때마다 전체 상태(state)를 갱신
+            for node_name, node_output in payload.items():
                 state.update(node_output)
+                print(f"[Graph] 노드 실행: {node_name} (route={state.get('route')})")
                 if node_name == "router" and state.get("route") != "price":
                     continue
                 next_status = _NEXT_STEP_STATUS.get(node_name)

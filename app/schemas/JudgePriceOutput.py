@@ -1,5 +1,7 @@
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+
+from pydantic import BaseModel, Field
+
 
 class RawPriceOutput(BaseModel):
     """KAMIS 원시 가격 조회 출력 스키마.

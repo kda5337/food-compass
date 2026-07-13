@@ -17,16 +17,18 @@ dependencies = [
     "langchain-openai>=0.2.0",
     "langchain-upstage>=0.3.0",
     "langgraph>=0.2.0",
-
     "sse-starlette>=2.1.0",   # Day3: SSE 스트리밍 응답 (FastAPI StreamingResponse만으론 SSE 포맷 처리가 번거로움)
     "tenacity>=9.0.0",         # Day3/Day5: KAMIS·참가격 API 실패 시 재시도(Retry) 로직
     "litellm>=1.50.0",         # 기술스택 명시된 LLMOps 모델 게이트웨이
+    "psycopg2-binary>=2.9.12",
 ]
 
 [dependency-groups]
 dev = [
+    "mypy>=2.2.0",
     "pytest>=8.0.0",           # Day2: 핵심 흐름 단위 테스트
     "pytest-asyncio>=0.24.0",  # LangGraph/FastAPI 비동기 노드 테스트용
+    "ruff>=0.15.21",
 ]
 stretch = [
     "langfuse>=2.50.0",        # Day5: LLMOps 선택 가점 항목 (Trace)
@@ -34,3 +36,22 @@ stretch = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["tests/APItest.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "frontend"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+exclude = ["tests/", "frontend/"]

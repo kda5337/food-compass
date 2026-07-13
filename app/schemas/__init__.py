@@ -1,3 +1,4 @@
+from .RouterOutput import ParseQuery
 from .schemas import (
     JudgePriceOutput,
     RawPriceInput,
@@ -5,7 +6,6 @@ from .schemas import (
     RouterOutput,
     SubstituteOutput,
 )
-from .RouterOutput import ParseQuery
 
 __all__ = [
     "RouterOutput",

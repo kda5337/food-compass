@@ -13,9 +13,6 @@ venv/
 # Mock/테스트 산출물
 .pytest_cache/
 
-# uv
-.python-version
-
 # 개발 노트 (로컬 전용, GitHub push 제외)
 dev_notes/
 

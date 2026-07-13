@@ -1,4 +1,3 @@
-import pytest
 
 from app.graph import compiled_graph
 
@@ -7,8 +6,10 @@ class TestGraph:
     async def test_price_path_end_to_end(self):
         result = await compiled_graph.ainvoke({"user_query": "상추 지금 비싸?"})
         assert result["route"] == "price"
-        assert "answer" in result
-        assert any(kw in result["answer"] for kw in ["비쌈", "적정", "쌈"])
+        assert result["answer"]  # LLM이 생성한 자유 문장이라 내용 대신 비어있지 않은지만 확인
+        judgments = result.get("judgment", [])
+        assert len(judgments) > 0
+        assert judgments[0]["status"] in ("비쌈", "적정", "쌈")
 
     async def test_price_path_contains_item_name(self):
         result = await compiled_graph.ainvoke({"user_query": "배추 요즘 비싸?"})
