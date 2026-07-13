@@ -20,7 +20,7 @@ from app.prompts.prompts import (
     KNOWLEDGE_STUB_RESPONSE,
     OFFTOPIC_RESPONSE,
 )
-from app.tools.judge import parse_price # noqa
+from app.tools.judge import parse_price  # noqa
 from app.tools.vector_store import get_collection
 
 from .state import AgentState

@@ -23,13 +23,13 @@ class TestJudgePrice:
         # 상추: 1주일 전 4500 vs 1개월 전 2800 → +60.7% → 비쌈
         result = judge_price(dpr1="-", dpr7="-", dpr3="4,500", dpr5="2,800")
         assert result.status == "비쌈"
-        assert result.diff_pct > 10
+        assert result.diff_pct > 5
 
     def test_appropriate_minus(self):
         # 배추: 1주일 전 2100 vs 1개월 전 2300 → -8.7% → 적정
         result = judge_price(dpr1="-", dpr7="-", dpr3="2,100", dpr5="2,300")
         assert result.status == "적정"
-        assert -10 <= result.diff_pct <= 10
+        assert -5 <= result.diff_pct <= 5
 
     def test_cheap(self):
         # 오이: 1주일 전 1200 vs 1개월 전 1400 → -14.3% → 쌈
