@@ -74,25 +74,130 @@ CREATE INDEX IF NOT EXISTS idx_query_log_route
 
 
 -- ============================================================
--- [3] RLS(Row Level Security) 설정
+-- [3] price_gokr_items
+--     역할: 참가격(data.go.kr, ProductPriceInfoService.getProductInfoSvc) 품목 마스터
+--          전체 604개 중 식품 카테고리(goodSmlclsCode 앞자리 0301=신선식품, 0302=가공식품)만
+--          적재 — 0303(화장품/생활용품/반려동물용품)은 애초에 제외
+--     갱신: 거의 안 바뀌는 마스터 데이터 — fetch 스크립트가 매번 UPSERT만 하고 삭제는 안 함
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS price_gokr_items (
+    good_id             TEXT        PRIMARY KEY,
+    good_name           TEXT        NOT NULL,
+    product_entp_code   TEXT,
+    good_unit_div_code  TEXT,
+    good_base_cnt       TEXT,
+    good_smlcls_code    TEXT        NOT NULL,  -- 0301xx/0302xx만 적재 (필터링은 앱 코드에서 수행)
+    good_total_cnt      TEXT,
+    good_total_div_code TEXT,
+    detail_mean         TEXT,
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_gokr_items_name
+    ON price_gokr_items (good_name);
+
+CREATE INDEX IF NOT EXISTS idx_price_gokr_items_smlcls
+    ON price_gokr_items (good_smlcls_code);
+
+
+-- ============================================================
+-- [4] price_gokr_stores
+--     역할: 참가격 판매처(매장) 마스터 (getStoreInfoSvc) — 전체 약 615개
+--     갱신: 마스터 데이터 — fetch 스크립트가 매번 UPSERT만 하고 삭제는 안 함
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS price_gokr_stores (
+    entp_id             TEXT        PRIMARY KEY,
+    entp_name           TEXT        NOT NULL,
+    entp_type_code      TEXT,
+    entp_area_code      TEXT,
+    area_detail_code    TEXT,
+    entp_telno          TEXT,
+    post_no             TEXT,
+    plmk_addr_basic     TEXT,
+    plmk_addr_detail    TEXT,
+    road_addr_basic     TEXT,
+    road_addr_detail    TEXT,
+    x_map_coord         TEXT,
+    y_map_coord         TEXT,
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- ============================================================
+-- [5] price_gokr_snapshot
+--     역할: 참가격 품목×매장별 가격 관측치(getProductPriceInfoSvc) — 실제로 쌓였다
+--          지워지는 시계열 데이터. price_gokr_items/stores(마스터)와 분리한 이유는
+--          보관 기간 정책이 이 테이블에만 적용돼야 하기 때문(마스터는 계속 유지).
+--     조사 주기: KAMIS(매일)와 달리 전국 단위로 격주(2주 간격) 동일 조사일 공유로 확인됨
+--          (예: 2026-06-12, 2026-06-26엔 데이터 있고 그 사이/이후 평범한 금요일엔 0건).
+--          다음 조사가 예상보다 더 늦어질 수 있음이 실측으로 확인돼서(2026-07-14 사고 —
+--          retention_days=15로 방금 저장한 데이터가 전부 삭제된 적 있음), retention_days는
+--          30일로 넉넉히 잡고, "테이블에 남은 가장 최신 good_inspect_day는 절대 삭제 안 함"
+--          안전장치를 앱 코드(app/tools/price_gokr_snapshot.py)에 추가해서 이중으로 방어함.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS price_gokr_snapshot (
+    id                  BIGSERIAL   PRIMARY KEY,
+    good_inspect_day    DATE        NOT NULL,
+    entp_id             TEXT        NOT NULL,
+    good_id             TEXT        NOT NULL,
+    good_price          INTEGER     NOT NULL,
+    good_dc_yn          TEXT,          -- 할인여부(Y/N) — 응답에 없을 때도 있어 NULL 허용
+    input_dttm          TIMESTAMPTZ,
+    fetched_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (good_id, entp_id, good_inspect_day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_gokr_snapshot_good_id
+    ON price_gokr_snapshot (good_id, good_inspect_day DESC);
+
+CREATE INDEX IF NOT EXISTS idx_price_gokr_snapshot_fetched_at
+    ON price_gokr_snapshot (fetched_at DESC);
+
+
+-- ============================================================
+-- [6] RLS(Row Level Security) 설정
 --     백엔드 전용 서비스이므로 service_role 키로만 접근
 --     anon / authenticated 역할 차단 (보안 기본값)
 -- ============================================================
 
-ALTER TABLE price_snapshot ENABLE ROW LEVEL SECURITY;
-ALTER TABLE query_log      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_snapshot      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE query_log           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_gokr_items    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_gokr_stores   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_gokr_snapshot ENABLE ROW LEVEL SECURITY;
 
 -- service_role은 RLS를 자동으로 우회하므로 별도 정책 불필요
 -- 아래는 명시적 차단 (anon 키로 직접 접근 방지)
+--
+-- [2026-07-14 수정] CREATE POLICY는 CREATE TABLE과 달리 IF NOT EXISTS를 지원하지 않아서,
+-- 이 파일을 이미 한 번 실행한 DB에 다시 통째로 실행하면 "policy already exists" 에러가 남
+-- (실제로 겪음) — 항상 안전하게 재실행할 수 있도록 DROP POLICY IF EXISTS를 먼저 실행
+DROP POLICY IF EXISTS "deny_anon_price_snapshot" ON price_snapshot;
 CREATE POLICY "deny_anon_price_snapshot" ON price_snapshot
     FOR ALL TO anon USING (FALSE);
 
+DROP POLICY IF EXISTS "deny_anon_query_log" ON query_log;
 CREATE POLICY "deny_anon_query_log" ON query_log
     FOR ALL TO anon USING (FALSE);
 
+DROP POLICY IF EXISTS "deny_anon_price_gokr_items" ON price_gokr_items;
+CREATE POLICY "deny_anon_price_gokr_items" ON price_gokr_items
+    FOR ALL TO anon USING (FALSE);
+
+DROP POLICY IF EXISTS "deny_anon_price_gokr_stores" ON price_gokr_stores;
+CREATE POLICY "deny_anon_price_gokr_stores" ON price_gokr_stores
+    FOR ALL TO anon USING (FALSE);
+
+DROP POLICY IF EXISTS "deny_anon_price_gokr_snapshot" ON price_gokr_snapshot;
+CREATE POLICY "deny_anon_price_gokr_snapshot" ON price_gokr_snapshot
+    FOR ALL TO anon USING (FALSE);
+
 -- ============================================================
--- [4] 초기 데이터
+-- [7] 초기 데이터
 --     실데이터는 GitHub Actions cron 적재 스크립트(추후 작성)가 채움.
---     이 스키마 파일에는 샘플 INSERT 없음 — price_snapshot 컬럼이
---     KAMIS 원본 응답 그대로라 손으로 채운 샘플이 실데이터와 어긋날 위험이 큼.
+--     이 스키마 파일에는 샘플 INSERT 없음 — 컬럼이 원본 API 응답 그대로라
+--     손으로 채운 샘플이 실데이터와 어긋날 위험이 큼.
 -- ============================================================

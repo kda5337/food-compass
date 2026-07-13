@@ -1,0 +1,86 @@
+"""참가격(data.go.kr) 식품 품목·매장·가격 전체 조회 -> Supabase price_gokr_* 적재.
+
+1회성 테스트 및 향후 GitHub Actions cron의 기반이 되는 스크립트.
+scripts/fetch_kamis_snapshot.py와 동일한 구조 — 품목/매장 마스터는 매번 UPSERT만
+하고, 가격 스냅샷만 보관 기간(retention) 정리 대상.
+
+가격 조사 주기가 격주(2주 간격)라 정확한 조사일을 미리 알 수 없음 —
+find_latest_inspect_day()로 아무 품목 하나(_PROBE_GOOD_ID) 기준 최신 조사일을
+먼저 찾고, 그 날짜를 전체 식품 품목(약 457개)에 재사용함.
+
+실행:
+    $env:PYTHONUTF8=1
+    .venv/Scripts/python.exe scripts/fetch_price_gokr_snapshot.py
+"""
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app.tools.price_gokr_client import (
+    fetch_all_stores,
+    fetch_food_items,
+    fetch_prices_for_item,
+    find_latest_inspect_day,
+)
+from app.tools.price_gokr_snapshot import (
+    delete_old_snapshots,
+    save_items,
+    save_price_snapshot,
+    save_stores,
+)
+
+# [2026-07-14 추가, 실제 사고 후 30일로 상향] 조사 주기가 격주보다도 더 불규칙하게
+# 밀릴 수 있음이 실측으로 확인됨(2026-06-26 이후 다음 조사가 2주 뒤에도 안 올라옴) —
+# delete_old_snapshots()의 "최신 good_inspect_day는 항상 보존" 안전장치와 함께 사용
+_RETENTION_DAYS = 30
+
+# 최신 조사일 탐색용 기준 품목 — 참이슬 오리지널(360ml), 조사 이력이 꾸준히 있어 선택
+_PROBE_GOOD_ID = "265"
+
+# 품목 하나당 API 호출 1회 — 457개 연속 호출 시 서버 부담을 줄이기 위한 간격(초)
+_REQUEST_INTERVAL_SEC = 0.2
+
+
+def main() -> None:
+    print("[1/4] 식품 품목 마스터 조회 중...")
+    items = fetch_food_items()
+    saved_items = save_items(items)
+    print(f"      {len(items)}개 품목 조회 -> {saved_items}건 저장(UPSERT)")
+
+    print("[2/4] 판매처(매장) 마스터 조회 중...")
+    stores = fetch_all_stores()
+    saved_stores = save_stores(stores)
+    print(f"      {len(stores)}개 매장 조회 -> {saved_stores}건 저장(UPSERT)")
+
+    print("[3/4] 최신 조사일 탐색 중...")
+    inspect_day = find_latest_inspect_day(_PROBE_GOOD_ID)
+    if inspect_day is None:
+        print("      최근 조사일을 찾지 못했습니다 — 조회 범위(21일)를 늘려야 할 수 있습니다.")
+        sys.exit(1)
+    print(f"      최신 조사일: {inspect_day}")
+
+    print(f"[4/4] {len(items)}개 품목의 {inspect_day}자 가격 조회 중...")
+    total_saved = 0
+    for i, item in enumerate(items, start=1):
+        good_id = item["good_id"]
+        rows = fetch_prices_for_item(good_id, inspect_day)
+        saved = save_price_snapshot(rows)
+        total_saved += saved
+        if i % 50 == 0 or i == len(items):
+            print(f"      진행: {i}/{len(items)} ({item['good_name']}: {len(rows)}건)")
+        time.sleep(_REQUEST_INTERVAL_SEC)
+
+    print("=" * 50)
+    print(f"가격 스냅샷 전체 저장 완료: {total_saved}건")
+
+    # 전체 저장이 다 끝난 뒤에 지우기 — 저장 도중 실패해도 기존 데이터가 먼저 날아가지 않도록
+    deleted = delete_old_snapshots(retention_days=_RETENTION_DAYS)
+    print(f"{_RETENTION_DAYS}일 이전 스냅샷 정리: {deleted}건 삭제")
+
+
+if __name__ == "__main__":
+    main()

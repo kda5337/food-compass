@@ -11,6 +11,7 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 load_dotenv()
 
@@ -19,6 +20,13 @@ _DATABASE_URL = os.getenv("DATABASE_URL", "")
 _DPR_FIELDS = ("dpr1", "dpr2", "dpr3", "dpr4", "dpr5", "dpr6", "dpr7")
 
 
+# [2026-07-14 추가] price_gokr_snapshot.py에서 DNS 일시 장애로 fetch 스크립트가 죽는 걸
+# 실제로 겪은 뒤, 같은 위험이 있는 KAMIS 쪽에도 예방적으로 연결 재시도 추가
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(psycopg2.OperationalError),
+)
 def _get_conn():
     url = urllib.parse.urlparse(_DATABASE_URL)
     return psycopg2.connect(
@@ -113,19 +121,29 @@ def get_latest_prices(item_name: str) -> list[dict[str, Any]]:
 
 
 def delete_old_snapshots(retention_days: int = 7) -> int:
-    """[2026-07-14 추가] regday가 (오늘 - retention_days)보다 오래된 row 삭제, 삭제 건수 반환.
+    """[2026-07-14 추가] regday가 (오늘 - retention_days)보다 오래되고, 테이블에 남아있는
+    가장 최신 regday보다도 오래된 row만 삭제. 삭제 건수 반환.
 
     `get_latest_prices()`는 항상 MAX(regday)만 조회하므로 오래된 row가 남아있어도 판정
     결과 자체엔 영향 없지만(§ 확인 완료), 매일 쌓이는 걸 무한정 방치하지 않도록 최근
     N일치만 유지 — 동시에 최근 며칠 치는 남겨서 "특정 날짜 수집분이 이상했다" 같은
     디버깅은 계속 가능하게 함(예: 축산물 제외 dpr1/dpr2 결측 이슈도 스냅샷이 남아있어서
     바로 진단할 수 있었음).
+
+    [2026-07-14 (14) 추가 보강] price_gokr_snapshot에서 실제로 겪은 사고(수집이 예상보다
+    지연되면서 retention_days 기준에 걸려 유일한 최신 데이터까지 삭제됨)를 계기로,
+    KAMIS cron이 하루 이틀 실패하는 경우에도 같은 일이 벌어지지 않도록 "테이블에 남은
+    가장 최신 regday는 아무리 오래돼도 절대 지우지 않는다"는 안전장치를 동일하게 추가.
     """
     conn = _get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "DELETE FROM price_snapshot WHERE regday < CURRENT_DATE - (%s * INTERVAL '1 day');",
+            """
+            DELETE FROM price_snapshot
+            WHERE regday < CURRENT_DATE - (%s * INTERVAL '1 day')
+              AND regday < (SELECT MAX(regday) FROM price_snapshot);
+            """,
             (retention_days,),
         )
         conn.commit()
