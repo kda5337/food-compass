@@ -31,6 +31,8 @@ class JudgePriceOutput(BaseModel):
     diff_pct: float  # 평년(dpr7) 대비
     week_diff_pct: float | None = None   # 1주일전(dpr3) 대비
     month_diff_pct: float | None = None  # 1개월전(dpr5) 대비
+    normalized_price: float | None = None  # 변환된 가격
+    unit: str | None = None  # 가격 단위 (예: 100g, 1개)
 
 
 class SubstituteOutput(BaseModel):

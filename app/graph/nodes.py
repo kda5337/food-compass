@@ -151,7 +151,8 @@ def _price_facts(judgments: list[dict], substitutes: list[str]) -> str:
             lines.append(f"- {j['item_name']}: 가격 데이터 없음(지원하지 않는 품목 — 가격·판정을 지어내지 말 것)")
             continue
         sign = "+" if j["diff_pct"] >= 0 else ""
-        if parse_price(j.get("today_price", "-")) is not None:
+        today_price = j.get("today_price")
+        if today_price is not None:
             # [2026-07-14 추가] today_price가 당일가 결측으로 며칠 전 값(dpr2~dpr5 fallback)을
             # 대신 쓴 경우, "현재가"라고만 하면 사용자가 오늘 가격으로 오해할 수 있어
             # price_as_of("1주일전" 등)를 그대로 문구에 노출 — LLM이 마치 당일가인 것처럼
