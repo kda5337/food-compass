@@ -230,6 +230,48 @@ def get_latest_prices(good_name: str) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in result_rows]
 
 
+def get_processed_price(good_name: str) -> dict[str, Any] | None:
+    """가공식품(참가격) 품목명 기준 최신 조사일의 매장 평균가 조회.
+
+    [시나리오 1: 쌀 vs 즉석밥] KAMIS와 달리 참가격은 매장별 개별가만 있고 전국
+    대표가(평균/중간값) 개념이 없음 — 매장 편차를 직접 확인한 결과(햇반(210g) 기준
+    443개 매장, 1,500~2,490원, 평균 1,946원/중앙값 1,880원) 극단적으로 치우친
+    분포는 아니어서 단순 평균을 대표값으로 채택. good_name은 price_gokr_items의
+    실제 상품명과 정확히 일치해야 함(일반 명칭 매핑은 app/tools/item_alias.py 담당).
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ROUND(AVG(sn.good_price), 1), COUNT(*), MAX(sn.good_inspect_day)
+            FROM price_gokr_snapshot sn
+            JOIN price_gokr_items i ON i.good_id = sn.good_id
+            WHERE i.good_name = %s
+              AND sn.good_inspect_day = (
+                  SELECT MAX(sn2.good_inspect_day)
+                  FROM price_gokr_snapshot sn2
+                  JOIN price_gokr_items i2 ON i2.good_id = sn2.good_id
+                  WHERE i2.good_name = %s
+              );
+            """,
+            (good_name, good_name),
+        )
+        avg_price, sample_count, inspect_day = cur.fetchone()
+        cur.close()
+    finally:
+        conn.close()
+
+    if avg_price is None:
+        return None
+    return {
+        "good_name": good_name,
+        "avg_price": float(avg_price),
+        "sample_count": sample_count,
+        "inspect_day": inspect_day.isoformat() if inspect_day else None,
+    }
+
+
 def delete_old_snapshots(retention_days: int = 30) -> int:
     """good_inspect_day가 (오늘 - retention_days)보다 오래되고, 테이블에 남아있는
     가장 최신 good_inspect_day보다도 오래된 row만 삭제. 삭제 건수 반환.

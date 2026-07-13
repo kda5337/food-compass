@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
 from app.schemas.schemas import JudgePriceOutput
+from app.tools.normalize import normalize_price_unit
 
 if TYPE_CHECKING:
     from app.graph.state import AgentState
 
 _EXPENSIVE_THRESHOLD = 5.0   # 평년 대비 +10% 초과 → 비쌈
 _CHEAP_THRESHOLD = -5.0      # 평년 대비 -10% 미만 → 쌈
-
-# 무게 단위 → 그램 환산 계수
-_WEIGHT_UNIT_TO_GRAM = {"kg": 1000, "g": 1}
-
-# 개수 기반 단위 (1개당으로 환산할 대상)
-_COUNT_UNITS = {"개", "속", "단", "포기", "마리", "봉", "팩", "모"}
 
 
 def parse_price(price_str: str) -> float | None:
@@ -32,51 +26,6 @@ def _pct_diff(current: float | None, past: float | None) -> float | None:
     if current is None or past is None or past == 0:
         return None
     return round((current - past) / past * 100, 1)
-
-def normalize_price_unit(
-    price: float | None, unit: str | None
-) -> tuple[float | None, str | None]:
-    """가격을 표준 단위로 환산.
-
-    - 무게 단위(kg, g)는 100g당 가격으로 변환.
-    - 개수 단위(개, 속, 단 등)는 1개당 가격으로 변환.
-    - unit이 없거나("" / None), 형식을 인식할 수 없으면 변환하지 않고 원본 그대로 반환.
-
-    예시:
-        normalize_price_unit(3000, "1kg")   -> (300.0, "100g")
-        normalize_price_unit(3000, "20kg")  -> (15.0, "100g")
-        normalize_price_unit(500, "100g")   -> (500.0, "100g")  # 이미 100g 기준
-        normalize_price_unit(5000, "10개")  -> (500.0, "1개")
-        normalize_price_unit(3000, "1개")   -> (3000.0, "1개")
-        normalize_price_unit(3000, "")      -> (3000, "")        # 스킵
-        normalize_price_unit(3000, "1속")   -> (3000.0, "1속")
-    """
-    if price is None or not unit:
-        return price, unit
-
-    match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z가-힣]+)\s*$", unit.strip())
-    if not match:
-        # "1kg" 같은 숫자+단위 형식이 아니면 인식 불가 — 변환 스킵
-        return price, unit
-
-    qty = float(match.group(1))
-    unit_label = match.group(2)
-
-    if unit_label in _WEIGHT_UNIT_TO_GRAM:
-        total_grams = qty * _WEIGHT_UNIT_TO_GRAM[unit_label]
-        if total_grams <= 0:
-            return price, unit
-        normalized_price = round(price / total_grams * 100, 1)
-        return normalized_price, "100g"
-
-    if unit_label in _COUNT_UNITS:
-        if qty <= 0:
-            return price, unit
-        normalized_price = round(price / qty, 1)
-        return normalized_price, f"1{unit_label}"
-
-    # 알려지지 않은 단위(예: "1단(500g)" 같은 복합 표기)는 변환하지 않고 그대로 반환
-    return price, unit
 
 def judge_price(
     dpr1: str, dpr7: str, dpr3: str | None = None, dpr5: str | None = None, unit: str | None = None,

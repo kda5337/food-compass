@@ -16,11 +16,15 @@ from app.prompts.prompts import (
     ANSWER_SUBSTITUTE_LINE,
     ANSWER_UNSUPPORTED_LINE,
     ANSWER_WEEK_DIFF_SUFFIX,
+    COMPARISON_ANSWER_SYSTEM_PROMPT,
     KNOWLEDGE_GENERATION_SYSTEM_PROMPT,
     KNOWLEDGE_STUB_RESPONSE,
     OFFTOPIC_RESPONSE,
 )
+from app.tools.item_alias import resolve_processed_alias
 from app.tools.judge import parse_price  # noqa
+from app.tools.normalize import rice_price_per_bowl
+from app.tools.price_gokr_snapshot import get_processed_price
 from app.tools.vector_store import get_collection
 
 from .state import AgentState
@@ -107,6 +111,139 @@ def search_substitute_node(state: AgentState) -> dict[str, Any]:
     return {"substitutes": substitutes}
 
 
+def resolve_processed_items_node(state: AgentState) -> dict[str, Any]:
+    """[시나리오 1: 쌀 vs 즉석밥] KAMIS에 없는 품목이 원물+가공식품 2개 조합의
+    가공식품 쪽으로 보이면 참가격(price_gokr)으로 재조회.
+
+    "이 품목이 원물인지 가공식품인지"를 LLM에게 분류시키지 않고, 이미 있는
+    found 플래그(KAMIS 조회 결과)만으로 판별 — 정확히 "품목 2개, 하나는 KAMIS에서
+    찾음 + 다른 하나는 못 찾음" 조합일 때만 참가격 폴백을 시도한다(스코프 제한:
+    참가격 단독 조회나 3개 이상 품목 조합은 이번 시나리오 1 구현 범위 밖).
+    """
+    price_data = state.get("price_data", [])
+    if len(price_data) != 2:
+        return {}
+
+    found_items = [item for item in price_data if item.get("found")]
+    not_found_items = [item for item in price_data if not item.get("found")]
+    if len(found_items) != 1 or len(not_found_items) != 1:
+        return {}
+
+    target = not_found_items[0]
+    good_name = resolve_processed_alias(target["item_name"])
+    if not good_name:
+        return {}
+
+    try:
+        processed = get_processed_price(good_name)
+    except Exception as e:
+        print(f"[resolve_processed_items] 참가격 DB 조회 실패: {e}")
+        return {}
+    if not processed:
+        return {}
+
+    updated_price_data = []
+    for item in price_data:
+        if item is target:
+            updated_price_data.append(
+                {
+                    "item_name": item["item_name"],
+                    "unit": "1공기(210g)",
+                    "found": True,
+                    "source": "price_gokr",
+                    "avg_price": processed["avg_price"],
+                    "sample_count": processed["sample_count"],
+                    "inspect_day": processed["inspect_day"],
+                }
+            )
+        else:
+            updated_price_data.append({**item, "source": "kamis"})
+    return {"price_data": updated_price_data}
+
+
+def compare_items_node(state: AgentState) -> dict[str, Any]:
+    """[시나리오 1] 원물(쌀) 밥 1공기 환산가와 가공식품(즉석밥) 1개(1공기) 평균가를
+    비교해서 어느 쪽이 더 경제적인지 계산 — 판정(judge_price)이 아니라 두 품목 간
+    비교라서 별도 로직으로 처리."""
+    price_data = state.get("price_data", [])
+    kamis_item = next((i for i in price_data if i.get("source") == "kamis"), None)
+    gokr_item = next((i for i in price_data if i.get("source") == "price_gokr"), None)
+    if kamis_item is None or gokr_item is None:
+        return {"comparison": None}
+
+    raw_price = parse_price(kamis_item.get("dpr1", "-"))
+    raw_per_bowl = (
+        rice_price_per_bowl(raw_price, kamis_item.get("unit")) if raw_price is not None else None
+    )
+    processed_per_bowl = gokr_item.get("avg_price")
+
+    if raw_per_bowl is None or processed_per_bowl is None:
+        return {"comparison": None}
+
+    cheaper_item = kamis_item["item_name"] if raw_per_bowl < processed_per_bowl else gokr_item["item_name"]
+    lower, higher = sorted([raw_per_bowl, processed_per_bowl])
+    diff_pct = round((higher - lower) / higher * 100, 1)
+    ratio = round(higher / lower, 1)
+
+    return {
+        "comparison": {
+            "raw_item": kamis_item["item_name"],
+            "raw_price_per_bowl": raw_per_bowl,
+            "raw_price_as_of": kamis_item.get("price_as_of"),
+            "processed_item": gokr_item["item_name"],
+            "processed_price_per_bowl": processed_per_bowl,
+            "cheaper_item": cheaper_item,
+            "diff_pct": diff_pct,
+            "ratio": ratio,
+        }
+    }
+
+
+def _comparison_facts(comparison: dict) -> str:
+    """비교형 답변 생성 LLM에게 넘겨줄 근거 데이터 — 이 안에 없는 수치는 지어내면 안 됨."""
+    raw_as_of = comparison.get("raw_price_as_of")
+    as_of_note = f"({raw_as_of} 기준)" if raw_as_of not in (None, "당일") else ""
+    return (
+        f"- {comparison['raw_item']}{as_of_note}: 밥 1공기(마른 쌀 90g = 지어진 밥 210g 기준)당 "
+        f"약 {comparison['raw_price_per_bowl']}원\n"
+        f"- {comparison['processed_item']}: 1개(1공기, 210g)당 약 {comparison['processed_price_per_bowl']}원\n"
+        f"- 결론: {comparison['cheaper_item']}이(가) 약 {comparison['diff_pct']}%"
+        f"({comparison['ratio']}배) 더 저렴함\n"
+        "- 환산 기준(반드시 답변에 한 문장으로 그대로 밝힐 것): "
+        "마른 쌀 90g = 지어진 밥 210g = 밥 1공기 = 즉석밥 1개"
+    )
+
+
+def _template_comparison_answer(comparison: dict) -> str:
+    """비교형 답변 LLM 호출 실패 시 사용하는 고정 템플릿."""
+    return (
+        f"{comparison['raw_item']} 밥 1공기(마른 쌀 90g→지어진 밥 210g 기준)는 약 "
+        f"{comparison['raw_price_per_bowl']}원, {comparison['processed_item']} 1개(1공기)는 약 "
+        f"{comparison['processed_price_per_bowl']}원이에요. "
+        f"{comparison['cheaper_item']} 쪽이 약 {comparison['diff_pct']}%({comparison['ratio']}배) 더 저렴해요."
+    )
+
+
+def _generate_comparison_answer(comparison: dict, user_query: str) -> str:
+    context = f"사용자 질문: {user_query}\n비교 데이터:\n{_comparison_facts(comparison)}"
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(content=COMPARISON_ANSWER_SYSTEM_PROMPT),
+                HumanMessage(content=context),
+            ]
+        )
+        content = response.content
+        answer = content if isinstance(content, str) else str(content)
+        if comparison["raw_item"] not in answer or comparison["processed_item"] not in answer:
+            print(f"[generate_answer_node] 비교형 답변에 품목명 누락, 템플릿 답변으로 폴백: {answer!r}")
+            answer = _template_comparison_answer(comparison)
+    except Exception as e:
+        print(f"[generate_answer_node] 비교형 LLM 호출 실패, 템플릿 답변으로 폴백: {e!r}")
+        answer = _template_comparison_answer(comparison)
+    return answer
+
+
 def _template_answer(judgments: list[dict], substitutes: list[str]) -> str:
     """LLM 호출 실패 시 사용하는 고정 템플릿 답변."""
     lines = []
@@ -184,6 +321,10 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     """판정 결과를 LLM으로 자연어 답변 생성 — 실패 시 고정 템플릿으로 폴백."""
     if state.get("route") == "knowledge":
         return {"answer": state.get("knowledge_result", ANSWER_NO_DATA)}
+
+    comparison = state.get("comparison")
+    if comparison:
+        return {"answer": _generate_comparison_answer(comparison, state.get("user_query", ""))}
 
     judgments = state.get("judgment", [])
     if not judgments:

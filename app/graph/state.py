@@ -11,4 +11,5 @@ class AgentState(TypedDict, total=False):
     judgment: list[dict[str, Any]]
     knowledge_result: str
     substitutes: list[str]
+    comparison: dict[str, Any] | None
     answer: str
