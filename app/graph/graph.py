@@ -22,8 +22,8 @@ def _route_decision(state: AgentState) -> str:
 
 def _post_judge_decision(state: AgentState) -> str:
     """hybrid 경로에서만 비쌈 판정 시 대체품 검색으로 분기, 그 외엔 바로 답변 생성."""
-    if state.get("route") != "hybrid":
-        return "answer"
+    #if state.get("route") != "hybrid":
+    #    return "answer"
     judgments = state.get("judgment", [])
     if any(j.get("status") == _EXPENSIVE_STATUS for j in judgments):
         return "substitute"

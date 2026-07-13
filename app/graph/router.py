@@ -7,7 +7,7 @@ from langchain_upstage import ChatUpstage
 
 from .state import AgentState
 from app.core.config import settings
-from app.prompts.prompts import ROUTER_SYSTEM_PROMPT
+from app.prompts.prompts import ROUTER_SYSTEM_PROMPT, ANSWER_GENERATION_SYSTEM_PROMPT
 from app.schemas import ParseQuery
 
 # 가격 관련 키워드 (keyword fallback 전용)
