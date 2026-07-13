@@ -140,8 +140,14 @@ jobs:
             echo "$API_IMAGE" > .current_api_image
             echo "$FRONTEND_IMAGE" > .current_frontend_image
 
-            docker pull "$API_IMAGE"
-            docker pull "$FRONTEND_IMAGE"
+            # [2026-07-14 추가] 순차 pull은 첫 배포 때 병목이었음(레이어 캐시 없는 상태에서
+            # api 이미지가 무거워 4분대 배포의 대부분을 차지) — 두 이미지를 병렬로 pull.
+            # 인자 없는 `wait`는 백그라운드 job이 실패해도 항상 0을 반환해 `set -e`가 못 잡으므로
+            # PID를 각각 잡아서 개별적으로 기다림
+            docker pull "$API_IMAGE" & API_PULL_PID=$!
+            docker pull "$FRONTEND_IMAGE" & FRONTEND_PULL_PID=$!
+            wait "$API_PULL_PID"
+            wait "$FRONTEND_PULL_PID"
             docker compose -f docker-compose.prod.yml up -d --force-recreate
 
             echo "헬스체크 중..."
@@ -190,8 +196,14 @@ jobs:
 
             export API_IMAGE=$(cat .previous_api_image)
             export FRONTEND_IMAGE=$(cat .previous_frontend_image)
-            docker pull "$API_IMAGE"
-            docker pull "$FRONTEND_IMAGE"
+            # [2026-07-14 추가] 순차 pull은 첫 배포 때 병목이었음(레이어 캐시 없는 상태에서
+            # api 이미지가 무거워 4분대 배포의 대부분을 차지) — 두 이미지를 병렬로 pull.
+            # 인자 없는 `wait`는 백그라운드 job이 실패해도 항상 0을 반환해 `set -e`가 못 잡으므로
+            # PID를 각각 잡아서 개별적으로 기다림
+            docker pull "$API_IMAGE" & API_PULL_PID=$!
+            docker pull "$FRONTEND_IMAGE" & FRONTEND_PULL_PID=$!
+            wait "$API_PULL_PID"
+            wait "$FRONTEND_PULL_PID"
             docker compose -f docker-compose.prod.yml up -d --force-recreate
 
             MAX_RETRIES=12
