@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_upstage import ChatUpstage
 
 from app.core.config import settings
-from app.prompts.prompts import ROUTER_SYSTEM_PROMPT, ANSWER_GENERATION_SYSTEM_PROMPT
+from app.prompts.prompts import ROUTER_SYSTEM_PROMPT
 from app.schemas import ParseQuery
 
 from .state import AgentState
