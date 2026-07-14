@@ -120,6 +120,28 @@ def get_latest_prices(item_name: str) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
+def search_similar_item_names(keyword: str) -> list[str]:
+    """정확히 일치하는 품목명이 없을 때 쓰는 ILIKE 부분일치 폴백 검색.
+
+    [2026-07-15 추가] "고추"로 물어봤을 때 KAMIS DB엔 "붉은고추"/"풋고추"/"건고추"만 있고
+    정확히 "고추"라는 품목명은 없어서 매번 KAMIS를 못 찾은 것으로 처리되고 참가격
+    (data.go.kr)으로 새고 있었음(KAMIS에 실제로 데이터가 있는데도 우선순위가 밀리던 문제).
+    get_latest_prices()의 정확 일치가 실패했을 때만 이 함수로 관련 품목명 후보를 찾는다.
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT item_name FROM price_snapshot WHERE item_name ILIKE %s ORDER BY item_name;",
+            (f"%{keyword}%",),
+        )
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+    return [row[0] for row in rows]
+
+
 def delete_old_snapshots(retention_days: int = 7) -> int:
     """[2026-07-14 추가] regday가 (오늘 - retention_days)보다 오래되고, 테이블에 남아있는
     가장 최신 regday보다도 오래된 row만 삭제. 삭제 건수 반환.

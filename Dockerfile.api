@@ -12,8 +12,12 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 # 의존성만 먼저 설치하는 레이어 — app/ 코드만 바뀌었을 땐 이 레이어가 캐시돼서 재빌드 안 됨
 COPY pyproject.toml uv.lock ./
+# [2026-07-15 추가] --group stretch(langfuse/langchain) — 이게 빠져있어서 실제 배포
+# 서버에는 Langfuse 트레이싱 코드(app/core/tracing.py)는 있는데 정작 langfuse 패키지가
+# 없어 매 요청마다 ImportError로 조용히 건너뛰고 있었음(운영 환경에서 트레이스가 하나도
+# 안 찍히던 원인 — 로컬 검증 스크립트만 Langfuse에 찍혔던 이유).
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --group stretch
 
 # [2026-07-14 추가] app/tools/vector_store.py가 쓰는 임베딩 모델(jhgan/ko-sroberta-multitask,
 # ~443MB)을 빌드 타임에 미리 받아 이미지에 포함시킴 — 안 그러면 컨테이너가 재배포/재시작될
