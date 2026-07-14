@@ -1,6 +1,7 @@
 """pydantic-settings 기반 전역 설정 관리."""
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +38,23 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _disable_noop_fallback(self) -> "Settings":
+        """[2026-07-15 코드리뷰 반영] llm_fallback_model이 llm_model과 같은 값으로
+        설정되면(.env 오타/오버라이드 등) app/core/llm.py가 장애 시 "같은 죽은 모델"로
+        재시도하게 돼 폴백 목적이 무의미해짐 — 이 경우 폴백을 명시적으로 비활성화(빈
+        문자열)해 기존 "빈 값이면 폴백 없음" 동작으로 안전하게 수렴시킨다. 앱을 통째로
+        거부(예외)시키지 않는 이유: 이 값은 배포 환경변수라 기동 자체를 막기보다
+        조용히 무해한 상태로 되돌리는 편이 안전함.
+        """
+        if self.llm_fallback_model and self.llm_fallback_model == self.llm_model:
+            print(
+                f"[config] llm_fallback_model이 llm_model과 동일({self.llm_model!r})해 "
+                "폴백을 비활성화합니다."
+            )
+            self.llm_fallback_model = ""
+        return self
 
 
 def get_settings() -> Settings:
