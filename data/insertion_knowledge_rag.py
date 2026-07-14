@@ -63,12 +63,12 @@ def main() -> None:
 
     client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 
-    # 반복 실행 시 중복을 막기 위해 기존 컬렉션을 지우고 새로 만든다(다른 컬렉션은 그대로 둠)
-    try:
+    # 반복 실행 시 중복을 막기 위해 기존 컬렉션을 지우고 새로 만든다(다른 컬렉션은 그대로 둠).
+    # [2026-07-15 코드리뷰 반영] "컬렉션 없음"일 때만 삭제를 건너뛰고, 실제 삭제 실패
+    # (DB/권한/파일락 등)는 그대로 예외로 터지게 함.
+    if KNOWLEDGE_COLLECTION_NAME in {c.name for c in client.list_collections()}:
         client.delete_collection(KNOWLEDGE_COLLECTION_NAME)
         print(f"기존 '{KNOWLEDGE_COLLECTION_NAME}' 컬렉션 삭제")
-    except Exception:
-        pass
 
     collection = client.get_or_create_collection(
         name=KNOWLEDGE_COLLECTION_NAME,
