@@ -26,6 +26,7 @@ from app.prompts.prompts import (
 )
 from app.tools.item_alias import resolve_processed_alias
 from app.tools.judge import parse_price  # noqa
+from app.tools.kamis import LIVESTOCK_ITEMS
 from app.tools.normalize import rice_price_per_bowl
 from app.tools.price_gokr_snapshot import get_processed_price, search_processed_items
 from app.tools.vector_store import get_collection
@@ -87,6 +88,15 @@ def search_knowledge_node(state: AgentState) -> dict[str, Any]:
         return {"knowledge_result": KNOWLEDGE_STUB_RESPONSE.format(item=item)}
 
 
+def _substitute_query_name(item_name: str) -> str:
+    """축산물은 "돼지 갈비"처럼 "품목 부위" 합성 이름으로 판정되는데, 이 이름 그대로
+    대체품을 검색하면 기존 자기 자신 제외 로직(완전 일치 검사)이 "돼지 갈비" != "돼지"라
+    못 걸러내서 대체품 후보에 "돼지" 자기 자신이 나오는 문제가 있었음(2026-07-15 확인) —
+    합성 이름이면 기본 품목명만 뽑아 검색하고, 그러면 기존 완전 일치 제외 로직이 정상 동작함."""
+    first_token = item_name.split(" ", 1)[0]
+    return first_token if first_token in LIVESTOCK_ITEMS else item_name
+
+
 def search_substitute_node(state: AgentState) -> dict[str, Any]:
     """비쌈으로 판정된 품목에 대해 ChromaDB에서 비슷한 품목 3개를 검색."""
     judgments = state.get("judgment", [])
@@ -97,7 +107,7 @@ def search_substitute_node(state: AgentState) -> dict[str, Any]:
     if not expensive_items:
         return {"substitutes": []}
 
-    query = expensive_items[0]  # 비쌈 품목 중 첫 번째 기준으로 검색
+    query = _substitute_query_name(expensive_items[0])  # 비쌈 품목 중 첫 번째 기준으로 검색
 
     try:
         collection = get_collection()
@@ -436,6 +446,21 @@ def _opening_conflicts_with_status(answer: str, status: str | None) -> bool:
     return False
 
 
+def _judgment_mentioned(item_name: str, answer: str) -> bool:
+    """답변이 이 판정 항목을 실제로 언급하고 있는지 확인.
+
+    [2026-07-15 확인] "돼지 갈비"처럼 "품목 부위" 합성 이름은 LLM이 자연스럽게 "돼지"를
+    생략하고 "갈비"라고만 쓰는 경우가 흔해서(문맥상 이미 돼지고기 얘기라 중복 언급을
+    피함), 전체 문자열을 그대로 대조하면 정상 답변인데도 불필요하게 템플릿로 폴백되는
+    문제가 있었음 — _product_core_name()과 동일한 이유로, 부위명(마지막 토큰)만으로도
+    언급된 것으로 인정한다.
+    """
+    if item_name in answer:
+        return True
+    core = item_name.rsplit(" ", 1)[-1]
+    return core in answer
+
+
 def _price_facts(judgments: list[dict], substitutes: list[str]) -> str:
     """LLM에게 근거로 넘겨줄 판정 데이터 — 이 안에 없는 수치는 LLM이 지어내면 안 됨."""
     lines = []
@@ -518,7 +543,7 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
         # 생략하는 경우가 있음(자유 문장 생성이라 확률적) — 어떤 품목에 대한 답변인지는
         # 사용자가 항상 알 수 있어야 하는 하드 요구사항이라, 프롬프트 지시만으론 보장이 안 돼서
         # 코드에서 직접 검증하고 누락 시 이미 품목명을 포함하는 템플릿 답변으로 폴백시킴.
-        if not any(j["item_name"] in answer for j in judgments):
+        if not any(_judgment_mentioned(j["item_name"], answer) for j in judgments):
             print(f"[generate_answer_node] LLM 답변에 품목명 누락, 템플릿 답변으로 폴백: {answer!r}")
             answer = _template_answer(judgments, substitutes)
         elif _opening_conflicts_with_status(answer, primary_status):
