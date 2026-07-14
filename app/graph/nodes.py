@@ -4,9 +4,8 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_upstage import ChatUpstage
 
-from app.core.config import settings
+from app.core.llm import invoke_with_fallback
 from app.prompts.prompts import (
     ANSWER_GENERATION_SYSTEM_PROMPT,
     ANSWER_MONTH_DIFF_SUFFIX,
@@ -20,6 +19,7 @@ from app.prompts.prompts import (
     COMMON_ANSWER_SYSTEM_PROMPT,
     COMPARISON_ANSWER_SYSTEM_PROMPT,
     KNOWLEDGE_GENERATION_SYSTEM_PROMPT,
+    KNOWLEDGE_NOT_FOUND,
     KNOWLEDGE_STUB_RESPONSE,
     OFFTOPIC_RESPONSE,
     PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT,
@@ -29,7 +29,7 @@ from app.tools.judge import parse_price  # noqa
 from app.tools.kamis import LIVESTOCK_ITEMS
 from app.tools.normalize import rice_price_per_bowl
 from app.tools.price_gokr_snapshot import get_processed_price, search_processed_items
-from app.tools.vector_store import get_collection
+from app.tools.vector_store import get_collection, get_knowledge_collection
 
 from .state import AgentState
 
@@ -37,16 +37,6 @@ _UNSUPPORTED_STATUS = "미지원"
 # 비쌈 판정 시에만 hybrid 경로에서 대체품 검색으로 분기 (judge_price 결과 기준)
 _EXPENSIVE_STATUS = "비쌈"
 _N_SUBSTITUTES = 3
-
-
-def _get_llm() -> ChatUpstage:
-    return ChatUpstage(
-        api_key=settings.upstage_api_key,
-        model=settings.llm_model,
-        timeout=30,
-        max_retries=2,
-    )
-llm = _get_llm()
 
 
 # [2026-07-14 추가] 프롬프트로 "마크다운 서식 금지"를 지시해도 LLM이 가끔 **굵게** 같은
@@ -60,8 +50,9 @@ def _invoke_with_prompts(specific_prompt: str, context: str) -> str:
     """공통 프롬프트(COMMON_ANSWER_SYSTEM_PROMPT) + 노드별 프롬프트를 각각 별도의
     SystemMessage로 함께 전달 — 페르소나·어투·이모지 개수 등 공통 원칙은 한 곳에서만
     관리하고, 노드별 프롬프트에는 그 노드만의 고유 규칙만 남기기 위함(2026-07-14 프롬프트 세분화).
-    반환 전 마크다운 강조 문법(**, __)을 제거해 순수 텍스트만 남긴다."""
-    response = llm.invoke(
+    주 모델 실패 시 백업 모델로 폴백(app/core/llm.py). 반환 전 마크다운 강조 문법(**, __)을
+    제거해 순수 텍스트만 남긴다."""
+    response = invoke_with_fallback(
         [
             SystemMessage(content=COMMON_ANSWER_SYSTEM_PROMPT),
             SystemMessage(content=specific_prompt),
@@ -73,13 +64,88 @@ def _invoke_with_prompts(specific_prompt: str, context: str) -> str:
     return _MARKDOWN_EMPHASIS_RE.sub("", text)
 
 
+_KNOWLEDGE_N_RESULTS = 4
+
+# 라우터가 추출하는 흔한 표현 -> 지식 DB item_name. 부분일치로도 안 잡히는 동의어만
+# 최소한으로 매핑(예: 사용자는 "키위"라 부르지만 KAMIS/지식 DB는 "참다래"). 필요 시 추가.
+_KNOWLEDGE_SYNONYMS = {"키위": "참다래"}
+
+
+def _match_knowledge_item_names(collection: Any, items: list[str]) -> list[str]:
+    """라우터가 추출한 품목명이 지식 DB의 item_name과 정확히 일치하지 않을 때를 위한
+    부분일치 매칭. 예: 라우터가 "대파"/"애호박"/"돼지고기"로 추출해도 지식 DB의
+    "파"/"호박"/"돼지" 문서에 매칭되도록(kamis 가격 경로의 ILIKE 폴백과 같은 취지).
+
+    정확 일치가 먼저 시도된 뒤에만 쓰이므로, 짧은 이름(예: "파")이 다른 품목명에
+    잘못 걸리는 위험은 실제로는 낮음("파프리카"는 정확 일치가 이미 잡음)."""
+    got = collection.get(include=["metadatas"])
+    known_names = {m["item_name"] for m in (got.get("metadatas") or [])}
+    matched: list[str] = []
+    for name in known_names:
+        if any(name in it or it in name for it in items):
+            matched.append(name)
+    return matched
+
+
+def _retrieve_knowledge_docs(user_query: str, items: list[str]) -> list[str]:
+    """food_knowledge 컬렉션에서 질문 관련 지식 문서를 검색해 문서 텍스트 리스트로 반환.
+
+    - 품목이 추출됐으면 그 품목명(item_name)으로 메타데이터 필터링해 해당 품목 문서만
+      가져온다(결정론적, 다른 품목 문서가 섞이지 않음). 정확 일치가 없으면 부분일치로
+      한 번 더 시도하고, 그래도 없으면 빈 리스트 → 호출부가 "정보 없음"으로 안내
+      (LLM 자체 지식으로 지어내지 않음).
+    - 품목이 없으면(일반 질문) 질문 텍스트로 의미 검색해 상위 문서를 가져온다.
+    """
+    collection = get_knowledge_collection()
+
+    # 동의어("키위"->"참다래" 등)를 지식 DB 표기로 확장해 검색 대상에 포함
+    items = list(dict.fromkeys(items + [_KNOWLEDGE_SYNONYMS[it] for it in items if it in _KNOWLEDGE_SYNONYMS]))
+
+    if items:
+        got = collection.get(
+            where={"item_name": {"$in": items}},
+            include=["documents"],
+        )
+        docs = list(got.get("documents") or [])
+        if docs:
+            return docs
+        matched = _match_knowledge_item_names(collection, items)
+        if matched:
+            got = collection.get(
+                where={"item_name": {"$in": matched}},
+                include=["documents"],
+            )
+            return list(got.get("documents") or [])
+        return []
+
+    res = collection.query(
+        query_texts=[user_query],
+        n_results=_KNOWLEDGE_N_RESULTS,
+        include=["documents"],
+    )
+    docs = res.get("documents") or [[]]
+    return list(docs[0]) if docs else []
+
+
 def search_knowledge_node(state: AgentState) -> dict[str, Any]:
-    """가격과 무관한 지식(보관법·대체품·제철정보 등) 질문에 대한 답변 생성."""
+    """제철·보관법 등 가격과 무관한 지식 질문에 대해, ChromaDB(food_knowledge)에서
+    검색한 문서 내용만 근거로 답변을 생성한다(LLM 자체 지식으로 지어내지 않음)."""
     items = state.get("items", [])
     item = items[0] if items else "해당 품목"
     user_query = state.get("user_query", "")
 
-    context = f"사용자 질문: {user_query}\n관련 품목: {item}"
+    try:
+        docs = _retrieve_knowledge_docs(user_query, items)
+    except Exception as e:
+        # 컬렉션 미적재(insertion_knowledge_rag.py 미실행) 등 — 지어내지 않고 준비 중 안내
+        print(f"[search_knowledge] 지식 컬렉션 조회 실패: {e!r}")
+        return {"knowledge_result": KNOWLEDGE_STUB_RESPONSE.format(item=item)}
+
+    if not docs:
+        return {"knowledge_result": KNOWLEDGE_NOT_FOUND.format(item=item)}
+
+    facts = "\n".join(f"- {doc}" for doc in docs)
+    context = f"사용자 질문: {user_query}\n참고 문서:\n{facts}"
 
     try:
         answer = _invoke_with_prompts(KNOWLEDGE_GENERATION_SYSTEM_PROMPT, context)
@@ -97,8 +163,21 @@ def _substitute_query_name(item_name: str) -> str:
     return first_token if first_token in LIVESTOCK_ITEMS else item_name
 
 
+def _lookup_item_category(collection: Any, query: str) -> str | None:
+    """대체품 컬렉션에서 해당 품목의 부류(category) 메타데이터를 조회. 없으면 None."""
+    try:
+        got = collection.get(where={"name": query}, include=["metadatas"])
+    except Exception:
+        return None
+    metas = got.get("metadatas") or []
+    return metas[0].get("category") if metas else None
+
+
 def search_substitute_node(state: AgentState) -> dict[str, Any]:
-    """비쌈으로 판정된 품목에 대해 ChromaDB에서 비슷한 품목 3개를 검색."""
+    """비쌈으로 판정된 품목에 대해 ChromaDB에서 같은 부류(축산물/채소류 등) 안에서만
+    유사한 품목 3개를 검색한다. [2026-07-15] 부류 필터를 걸기 전에는 "소"의 대체품으로
+    천일염·새우젓 같은 다른 부류가 섞여 나왔음 — 같은 부류로 한정해 진짜 유사한 원물만
+    나오도록 함."""
     judgments = state.get("judgment", [])
     expensive_items = [
         j["item_name"] for j in judgments if j.get("status") == _EXPENSIVE_STATUS
@@ -114,11 +193,17 @@ def search_substitute_node(state: AgentState) -> dict[str, Any]:
     except Exception:
         return {"substitutes": []}
 
+    # 비쌈 품목의 부류를 찾아 같은 부류 안에서만 검색. 부류를 못 찾으면(컬렉션에 없는
+    # 품목 등) 대체품을 억지로 추천하지 않고 빈 리스트 반환(다른 부류 오염 방지).
+    category = _lookup_item_category(collection, query)
+    if category is None:
+        return {"substitutes": []}
+
     # 자기 자신이 걸러질 걸 대비해 여유 있게 가져온다
     results = collection.query(
         query_texts=[query],
         n_results=_N_SUBSTITUTES + 5,
-        where={"source": "kamis"},
+        where={"category": category},
         include=["documents", "metadatas"],
     )
 

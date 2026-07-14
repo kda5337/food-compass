@@ -4,9 +4,8 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_upstage import ChatUpstage
 
-from app.core.config import settings
+from app.core.llm import ainvoke_structured_with_fallback
 from app.prompts.prompts import ROUTER_SYSTEM_PROMPT, VALIDATION_SYSTEM_PROMPT
 from app.schemas import ParseQuery, ValidateQuery
 
@@ -58,25 +57,14 @@ def _keyword_router(query: str) -> ParseQuery:
     return ParseQuery(intent="off-topic", items=[])
 
 
-def _get_llm() -> ChatUpstage:
-    return ChatUpstage(
-        api_key=settings.upstage_api_key,
-        model=settings.llm_model,
-        timeout=30,
-        max_retries=2,
-    )
-
-
 async def _llm_router(query: str) -> ParseQuery:
-    """Upstage Solar LLM 구조화 출력 라우터. 실패 시 keyword fallback."""
+    """Upstage Solar LLM 구조화 출력 라우터. 주/백업 모델 모두 실패 시 keyword fallback."""
     try:
-        llm = _get_llm()
-        structured_llm = llm.with_structured_output(ParseQuery)
         messages = [
             SystemMessage(content=ROUTER_SYSTEM_PROMPT),
             HumanMessage(content=f"사용자 질문: {query}"),
         ]
-        result = await structured_llm.ainvoke(messages)
+        result = await ainvoke_structured_with_fallback(ParseQuery, messages)
         print(f"[Router] 의도: {result.intent}, 품목: {result.items}")
         return result
     except Exception as e:
@@ -102,8 +90,6 @@ async def validate_request_node(state: AgentState) -> dict[str, Any]:
     노드는 오탐(false positive) 방지용 방어선이지, 정상 요청까지 막는 게 목적이 아님.
     """
     try:
-        llm = _get_llm()
-        structured_llm = llm.with_structured_output(ValidateQuery)
         messages = [
             SystemMessage(content=VALIDATION_SYSTEM_PROMPT),
             HumanMessage(
@@ -113,7 +99,7 @@ async def validate_request_node(state: AgentState) -> dict[str, Any]:
                 )
             ),
         ]
-        result = await structured_llm.ainvoke(messages)
+        result = await ainvoke_structured_with_fallback(ValidateQuery, messages)
         print(f"[validate_request] is_valid={result.is_valid}, reason={result.reason}")
         if not result.is_valid:
             return {"route": "off-topic", "items": []}

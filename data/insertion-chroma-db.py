@@ -1,9 +1,18 @@
 """
-KAMIS(농수산물) + 참가격(생필품) 품목명을 가져와서 하나의 Chroma DB 컬렉션에 저장하는 스크립트.
+[2026-07-15 DEPRECATED — 실행하지 말 것] all_food_products 컬렉션 구축은 이제
+data/build_substitute_collection.py가 담당합니다.
 
+이 스크립트는 (1) 참가격(price.go.kr) 식료품까지 함께 적재하고 (2) KAMIS 이름을
+API에서 "돼지고기"처럼 가져와 판정 결과 이름("돼지")과 어긋나게 저장하며 (3) 부류
+메타데이터가 없어, 대체품 검색에 "소→천일염" 같은 교차오염을 일으켰습니다. 지금 다시
+실행하면 방금 정리한 KAMIS 전용·부류별 컬렉션을 도로 오염된 상태로 덮어씁니다.
+따라서 main()은 안전장치로 아무 것도 하지 않고 안내만 출력하도록 막아뒀습니다.
+(품목 설명 LLM 생성 등 헬퍼 함수는 나중에 재활용할 수 있어 그대로 남겨둡니다.)
+
+KAMIS(농수산물) + 참가격(생필품) 품목명을 가져와서 하나의 Chroma DB 컬렉션에 저장하던
+원래 스크립트입니다.
 - KAMIS: productInfo(식량작물/채소류/특용작물/과일류/수산물) + dailySalesList(축산물)
 - 참가격(price.go.kr): 생필품 품목 마스터
-- "식품(가공식품)" 카테고리는 KAMIS/참가격 어디에도 없어서 별도 API(data.go.kr) 연동이 필요합니다.
 """
 
 import asyncio
@@ -399,23 +408,13 @@ def get_kamis_items_with_descriptions(concurrency: int = 5) -> list[dict]:
 # ── 5. 실행 ─────────────────────────────────────────────────────────
 
 def main():
-    if not check_env_vars():
-        sys.exit(1)
-
-    delete_all_collections()
-
-    print("\n── 결과 요약 ──")
-
-    # KAMIS: 설명을 생성해서 그 설명 텍스트를 임베딩 대상으로 저장
-    kamis_items = get_kamis_items_with_descriptions()
-    save_items_to_chroma(kamis_items, collection_name=COLLECTION_NAME)
-
-    # 참가격: 기존 방식 그대로 (품목명 자체를 임베딩)
-    price_items = get_price_gokr_items()
-    price_items = [{"id": f"pricegokr_{it['id']}", "document": it["name"]} for it in price_items]
-    collection = save_items_to_chroma(price_items, collection_name=COLLECTION_NAME)
-
-    print(f"\n최종 컬렉션 '{COLLECTION_NAME}' 총 {collection.count()}개 품목")
+    # [2026-07-15 DEPRECATED] 실수로 실행해 컬렉션을 오염시키는 것을 막기 위해 비활성화.
+    # all_food_products 재구축은 data/build_substitute_collection.py를 사용하세요.
+    print("[DEPRECATED] 이 스크립트는 더 이상 사용하지 않습니다.")
+    print("  대체품 컬렉션(all_food_products) 재구축: data/build_substitute_collection.py")
+    print("  지식 컬렉션(food_knowledge) 적재:        data/insertion_knowledge_rag.py")
+    print("  (파일 상단 주석 참고 — 왜 비활성화했는지 설명돼 있습니다.)")
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()

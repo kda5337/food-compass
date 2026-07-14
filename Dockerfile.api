@@ -29,6 +29,17 @@ RUN .venv/bin/python -c "from sentence_transformers import SentenceTransformer; 
 
 COPY app/ app/
 
+# [2026-07-15 추가] 지식 RAG 적재 스크립트와 원본 문서를 이미지에 포함 — 프로덕션에서
+# `docker compose exec api .venv/bin/python data/insertion_knowledge_rag.py`로 컨테이너
+# 안에서 바로 실행해 food_knowledge 컬렉션을 (재)적재하기 위함. 컨테이너엔 chromadb·
+# 임베딩 모델이 이미 있고 data/chroma_db는 볼륨 마운트라, 여기서 쓴 결과가 호스트에 남음.
+# (data/chroma_db 자체는 .dockerignore로 제외되므로 무거운 로컬 DB는 안 들어감.)
+# 앞으로 지식 문서 수정 시: JSON 편집 → 배포 → 위 명령 재실행 흐름으로 반복 활용.
+COPY data/insertion_knowledge_rag.py ./data/insertion_knowledge_rag.py
+COPY data/build_substitute_collection.py ./data/build_substitute_collection.py
+COPY data/inspect_chroma.py ./data/inspect_chroma.py
+COPY data/rag_docs/ ./data/rag_docs/
+
 ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000

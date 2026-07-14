@@ -10,6 +10,10 @@ class Settings(BaseSettings):
 
     upstage_api_key: str = ""
     llm_model: str = "solar-pro3"
+    # [2026-07-15] 주 모델(llm_model) 호출이 실패할 때 대비하는 백업 모델.
+    # LiteLLM 같은 게이트웨이 없이 app/core/llm.py에서 코드로 직접 폴백 처리.
+    # 값이 비어있으면 폴백 없이 주 모델만 사용(기존 동작과 동일).
+    llm_fallback_model: str = "solar-pro"
 
     supabase_url: str = ""
     supabase_key: str = ""
