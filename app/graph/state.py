@@ -14,4 +14,5 @@ class AgentState(TypedDict, total=False):
     knowledge_result: str
     substitutes: list[str]
     comparison: dict[str, Any] | None
+    processed_prices: list[dict[str, Any]]
     answer: str

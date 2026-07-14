@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,17 +14,20 @@ from app.prompts.prompts import (
     ANSWER_PRICE_LINE,
     ANSWER_PRICE_WITH_AMOUNT_AS_OF_LINE,
     ANSWER_PRICE_WITH_AMOUNT_LINE,
+    ANSWER_PROCESSED_UNSUPPORTED_LINE,
     ANSWER_SUBSTITUTE_LINE,
     ANSWER_UNSUPPORTED_LINE,
+    COMMON_ANSWER_SYSTEM_PROMPT,
     COMPARISON_ANSWER_SYSTEM_PROMPT,
     KNOWLEDGE_GENERATION_SYSTEM_PROMPT,
     KNOWLEDGE_STUB_RESPONSE,
     OFFTOPIC_RESPONSE,
+    PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT,
 )
 from app.tools.item_alias import resolve_processed_alias
 from app.tools.judge import parse_price  # noqa
 from app.tools.normalize import rice_price_per_bowl
-from app.tools.price_gokr_snapshot import get_processed_price
+from app.tools.price_gokr_snapshot import get_processed_price, search_processed_items
 from app.tools.vector_store import get_collection
 
 from .state import AgentState
@@ -43,6 +47,31 @@ def _get_llm() -> ChatUpstage:
     )
 llm = _get_llm()
 
+
+# [2026-07-14 추가] 프롬프트로 "마크다운 서식 금지"를 지시해도 LLM이 가끔 **굵게** 같은
+# 마크다운 강조 문법을 흘리는 경우가 있어(실제로 가공식품 답변에서 관측됨), 프롬프트 지시만으론
+# 보장이 안 돼서 코드에서 직접 제거 — 채팅 UI가 마크다운을 렌더링하지 않아 "**"이 그대로
+# 노출되는 문제를 막기 위한 하드 개런티.
+_MARKDOWN_EMPHASIS_RE = re.compile(r"\*\*|__")
+
+
+def _invoke_with_prompts(specific_prompt: str, context: str) -> str:
+    """공통 프롬프트(COMMON_ANSWER_SYSTEM_PROMPT) + 노드별 프롬프트를 각각 별도의
+    SystemMessage로 함께 전달 — 페르소나·어투·이모지 개수 등 공통 원칙은 한 곳에서만
+    관리하고, 노드별 프롬프트에는 그 노드만의 고유 규칙만 남기기 위함(2026-07-14 프롬프트 세분화).
+    반환 전 마크다운 강조 문법(**, __)을 제거해 순수 텍스트만 남긴다."""
+    response = llm.invoke(
+        [
+            SystemMessage(content=COMMON_ANSWER_SYSTEM_PROMPT),
+            SystemMessage(content=specific_prompt),
+            HumanMessage(content=context),
+        ]
+    )
+    content = response.content
+    text = content if isinstance(content, str) else str(content)
+    return _MARKDOWN_EMPHASIS_RE.sub("", text)
+
+
 def search_knowledge_node(state: AgentState) -> dict[str, Any]:
     """가격과 무관한 지식(보관법·대체품·제철정보 등) 질문에 대한 답변 생성."""
     items = state.get("items", [])
@@ -52,13 +81,8 @@ def search_knowledge_node(state: AgentState) -> dict[str, Any]:
     context = f"사용자 질문: {user_query}\n관련 품목: {item}"
 
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=KNOWLEDGE_GENERATION_SYSTEM_PROMPT),
-                HumanMessage(content=context),
-            ]
-        )
-        return {"knowledge_result": response.content}
+        answer = _invoke_with_prompts(KNOWLEDGE_GENERATION_SYSTEM_PROMPT, context)
+        return {"knowledge_result": answer}
     except Exception:
         return {"knowledge_result": KNOWLEDGE_STUB_RESPONSE.format(item=item)}
 
@@ -197,6 +221,105 @@ def compare_items_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+def search_processed_price_node(state: AgentState) -> dict[str, Any]:
+    """[가공식품 단독 조회] KAMIS에 없는 품목(예: "참치캔")을 참가격(price_gokr)에서
+    부분일치로 검색해 매칭되는 상품 전부의 평균가를 조회 — 비쌈/적정 판정은 하지 않음.
+
+    ChromaDB 유사도 검색으로 상품 1개만 콕 집는 방식도 검토했으나, "소"를 검색했을 때
+    "천일염"이 나왔던 것처럼 엉뚱한 상품이 잘못 골라질 위험이 있어(2026-07-14 사용자 확인)
+    매칭되는 상품을 전부 보여주는 방식을 택함 — 잘못된 단일 매칭 자체가 발생할 수 없음.
+    """
+    price_data = state.get("price_data", [])
+    results = []
+    for item in price_data:
+        matches = search_processed_items(item["item_name"])
+        products = []
+        for match in matches:
+            price_info = get_processed_price(match["good_name"])
+            if price_info:
+                products.append(
+                    {
+                        "good_name": match["good_name"],
+                        "avg_price": price_info["avg_price"],
+                        "sample_count": price_info["sample_count"],
+                    }
+                )
+        results.append(
+            {
+                "item_name": item["item_name"],
+                "found": bool(products),
+                "products": products,
+            }
+        )
+    return {"processed_prices": results}
+
+
+def _processed_price_facts(results: list[dict]) -> str:
+    """가공식품 단독 조회 답변 생성 LLM에게 넘겨줄 근거 데이터 — 이 안에 없는 수치는 지어내면 안 됨."""
+    lines = []
+    for r in results:
+        if not r["found"]:
+            lines.append(f"- {r['item_name']}: 가격 데이터 없음(지원하지 않는 품목 — 가격을 지어내지 말 것)")
+            continue
+        lines.append(f"- {r['item_name']} 검색 결과 (판정 없이 평균가만 제공):")
+        for p in r["products"]:
+            lines.append(f"  - {p['good_name']}: 평균 {p['avg_price']}원 (매장 {p['sample_count']}곳 기준)")
+    return "\n".join(lines)
+
+
+def _template_processed_price_answer(results: list[dict]) -> str:
+    """가공식품 단독 조회 LLM 호출 실패 시 사용하는 고정 템플릿."""
+    lines = []
+    for r in results:
+        if not r["found"]:
+            lines.append(ANSWER_PROCESSED_UNSUPPORTED_LINE.format(item=r["item_name"]))
+            continue
+        product_lines = ", ".join(f"{p['good_name']} 평균 {p['avg_price']}원" for p in r["products"])
+        lines.append(f"{r['item_name']}: {product_lines}")
+    return "\n".join(lines)
+
+
+def _product_core_name(good_name: str) -> str:
+    """"동원참치 라이트스탠다드(150g)" -> "동원참치 라이트스탠다드" — 괄호 안 규격 표기를 뗀 핵심명.
+
+    LLM이 답변을 자연스럽게 쓰면서 "(150g)" -> "150g"처럼 괄호를 없애거나 띄어쓰기를
+    살짝 바꾸는 경우가 흔해서(실제로 관측함), 전체 상품명을 그대로 문자열 대조하면
+    정상 답변인데도 불필요하게 폴백되는 문제가 있어 핵심명만 비교.
+    """
+    return re.sub(r"\(.*\)\s*$", "", good_name).strip()
+
+
+def _processed_price_answer_covers_results(answer: str, results: list[dict]) -> bool:
+    """답변이 실제 조회 결과를 반영하고 있는지 확인.
+
+    [2026-07-14 확인] r["item_name"]은 사용자가 부른 원문 그대로(예: "참치캔")라, LLM이
+    매칭된 실제 상품명(예: "동원참치 라이트스탠다드")으로 자연스럽게 답하면 원문 "참치캔"이
+    답변에 안 남는 경우가 많음 — 이건 정상 답변인데 원문 문자열만 확인하면 불필요하게
+    폴백되므로, "찾음" 케이스는 매칭된 상품명(핵심명 기준) 중 하나라도 있는지로,
+    "못 찾음" 케이스만 item_name으로 확인.
+    """
+    for r in results:
+        if r["found"]:
+            if any(_product_core_name(p["good_name"]) in answer for p in r["products"]):
+                return True
+        elif r["item_name"] in answer:
+            return True
+    return False
+
+
+def _generate_processed_price_answer(results: list[dict], user_query: str) -> str:
+    context = f"사용자 질문: {user_query}\n가공식품 가격 조회 결과:\n{_processed_price_facts(results)}"
+    try:
+        answer = _invoke_with_prompts(PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT, context)
+        if not _processed_price_answer_covers_results(answer, results):
+            print(f"[generate_answer_node] 가공식품 답변에 조회 결과 누락, 템플릿 답변으로 폴백: {answer!r}")
+            answer = _template_processed_price_answer(results)
+    except Exception as e:
+        print(f"[generate_answer_node] 가공식품 LLM 호출 실패, 템플릿 답변으로 폴백: {e!r}")
+        answer = _template_processed_price_answer(results)
+    return answer
+
+
 def _comparison_facts(comparison: dict) -> str:
     """비교형 답변 생성 LLM에게 넘겨줄 근거 데이터 — 이 안에 없는 수치는 지어내면 안 됨."""
     raw_as_of = comparison.get("raw_price_as_of")
@@ -225,14 +348,7 @@ def _template_comparison_answer(comparison: dict) -> str:
 def _generate_comparison_answer(comparison: dict, user_query: str) -> str:
     context = f"사용자 질문: {user_query}\n비교 데이터:\n{_comparison_facts(comparison)}"
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=COMPARISON_ANSWER_SYSTEM_PROMPT),
-                HumanMessage(content=context),
-            ]
-        )
-        content = response.content
-        answer = content if isinstance(content, str) else str(content)
+        answer = _invoke_with_prompts(COMPARISON_ANSWER_SYSTEM_PROMPT, context)
         if comparison["raw_item"] not in answer or comparison["processed_item"] not in answer:
             print(f"[generate_answer_node] 비교형 답변에 품목명 누락, 템플릿 답변으로 폴백: {answer!r}")
             answer = _template_comparison_answer(comparison)
@@ -320,6 +436,10 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     if comparison:
         return {"answer": _generate_comparison_answer(comparison, state.get("user_query", ""))}
 
+    processed_prices = state.get("processed_prices")
+    if processed_prices:
+        return {"answer": _generate_processed_price_answer(processed_prices, state.get("user_query", ""))}
+
     judgments = state.get("judgment", [])
     if not judgments:
         return {"answer": ANSWER_NO_DATA}
@@ -340,13 +460,7 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     context = "\n".join(context_parts)
 
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=ANSWER_GENERATION_SYSTEM_PROMPT),
-                HumanMessage(content=context),
-            ]
-        )
-        answer = response.content
+        answer = _invoke_with_prompts(ANSWER_GENERATION_SYSTEM_PROMPT, context)
         # [2026-07-14 추가] 프롬프트에 "품목명을 반드시 언급할 것"을 지시해도 LLM이 가끔
         # 생략하는 경우가 있음(자유 문장 생성이라 확률적) — 어떤 품목에 대한 답변인지는
         # 사용자가 항상 알 수 있어야 하는 하드 요구사항이라, 프롬프트 지시만으론 보장이 안 돼서

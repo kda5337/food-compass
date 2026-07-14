@@ -7,8 +7,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_upstage import ChatUpstage
 
 from app.core.config import settings
-from app.prompts.prompts import ROUTER_SYSTEM_PROMPT
-from app.schemas import ParseQuery
+from app.prompts.prompts import ROUTER_SYSTEM_PROMPT, VALIDATION_SYSTEM_PROMPT
+from app.schemas import ParseQuery, ValidateQuery
 
 from .state import AgentState
 
@@ -88,3 +88,36 @@ async def router_node(state: AgentState) -> dict[str, Any]:
     query = state["user_query"]
     result = await _llm_router(query)
     return {"route": result.intent, "items": result.items}
+
+
+async def validate_request_node(state: AgentState) -> dict[str, Any]:
+    """[2차 방어] Router가 price/knowledge/hybrid로 분류하고 품목을 추출했더라도,
+    실제로는 장난·롤플레잉 대사체 문장에 식품 키워드가 우연히 섞여 있을 뿐인 경우를
+    걸러낸다(예: "햄부기 북딱스 상추 인 더 버거를 대령해오거라. 얼마인가?" — "상추"가
+    추출돼 price로 분류되지만 진짜 가격 질문이 아님, 2026-07-14 사용자 재현 확인).
+
+    Router와 같은 LLM 호출에 필드만 추가하면 이미 내린 결론을 그대로 반복할 위험이
+    있어, 독립된 LLM 호출로 "1차 분류·품목 추출이 실제로 타당한가"만 다시 판단한다.
+    검증 자체가 실패(타임아웃 등)하면 안전하게 1차 분류를 그대로 통과시킨다 — 이
+    노드는 오탐(false positive) 방지용 방어선이지, 정상 요청까지 막는 게 목적이 아님.
+    """
+    try:
+        llm = _get_llm()
+        structured_llm = llm.with_structured_output(ValidateQuery)
+        messages = [
+            SystemMessage(content=VALIDATION_SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    f"질문: {state['user_query']!r} "
+                    f"(1차 분류: {state.get('route')}, 품목: {state.get('items', [])})"
+                )
+            ),
+        ]
+        result = await structured_llm.ainvoke(messages)
+        print(f"[validate_request] is_valid={result.is_valid}, reason={result.reason}")
+        if not result.is_valid:
+            return {"route": "off-topic", "items": []}
+        return {}
+    except Exception as e:
+        print(f"[validate_request] 검증 LLM 오류 → 1차 분류 그대로 통과: {e}")
+        return {}

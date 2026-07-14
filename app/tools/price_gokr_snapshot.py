@@ -14,6 +14,8 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
+from app.tools.region import classify_region
+
 load_dotenv()
 
 _DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -156,6 +158,57 @@ def save_stores(stores: list[dict[str, Any]]) -> int:
     return len(stores)
 
 
+def save_store_regions() -> dict[str, int]:
+    """price_gokr_stores의 주소를 8개 권역으로 분류해 price_gokr_store_regions에 UPSERT.
+
+    분류 기준은 app/tools/region.py의 classify_region() 참고. 분류 불가한 매장(알려지지
+    않은 주소 첫 토큰)은 저장하지 않고 개수만 세서 반환 — 임의로 추정해서 저장하지 않음.
+    반환값: {"classified": 분류돼서 저장된 매장 수, "unclassified": 분류 실패 매장 수}
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT entp_id, plmk_addr_basic, road_addr_basic FROM price_gokr_stores;")
+        stores = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    rows = []
+    unclassified_ids = []
+    for entp_id, plmk_addr, road_addr in stores:
+        region = classify_region(plmk_addr) or classify_region(road_addr)
+        if region is None:
+            unclassified_ids.append(entp_id)
+            continue
+        rows.append((entp_id, region))
+
+    if unclassified_ids:
+        print(f"[save_store_regions] 지역 분류 실패 매장 {len(unclassified_ids)}개: {unclassified_ids}")
+
+    if rows:
+        conn = _get_conn()
+        try:
+            cur = conn.cursor()
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO price_gokr_store_regions (entp_id, region)
+                VALUES %s
+                ON CONFLICT (entp_id) DO UPDATE
+                    SET region = EXCLUDED.region,
+                        classified_at = NOW();
+                """,
+                rows,
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+
+    return {"classified": len(rows), "unclassified": len(unclassified_ids)}
+
+
 def save_price_snapshot(rows: list[dict[str, Any]]) -> int:
     """가격 관측치를 price_gokr_snapshot에 UPSERT. 저장된 row 수 반환."""
     if not rows:
@@ -270,6 +323,54 @@ def get_processed_price(good_name: str) -> dict[str, Any] | None:
         "sample_count": sample_count,
         "inspect_day": inspect_day.isoformat() if inspect_day else None,
     }
+
+
+# [2026-07-14 추가] 가공식품 단독 조회(예: "참치캔 얼마야?") 전용 — 사용자가 부르는 이름이
+# price_gokr_items의 정확한 상품명과 다를 수 있어서(예: "참치캔" vs "동원참치 라이트스탠다드
+# (150g)") 부분일치로 검색. ChromaDB 유사도 검색(가장 가까운 상품 1개만 반환)도 검토했으나,
+# "소" 검색 시 "천일염"이 나왔던 것처럼 엉뚱한 상품이 잘못 골라질 위험이 있어 기각 —
+# 대신 매칭되는 상품을 전부 찾아서 각각의 평균가를 다 보여주는 방식으로 그 위험 자체를 없앰
+# (사용자 확인, 2026-07-14).
+_PACKAGING_SUFFIXES = ("통조림", "캔", "병", "팩", "봉", "개입", "세트")
+
+
+def _normalize_search_keyword(raw_item_name: str) -> str:
+    """"동원 참치 캔" 같은 표현에서 포장 단위 단어를 떼어내고 공백을 제거해 검색 키워드로 변환.
+
+    price_gokr_items의 상품명엔 "캔"/"통조림" 같은 포장 단어가 거의 안 나오고(수량은
+    "(4캔)"처럼 괄호 안에 붙음), 라우터가 추출한 품목명엔 이런 단어가 그대로 남아있는 경우가
+    많아서(예: "동원 참치 캔") 이 단어들을 떼지 않으면 ILIKE 부분일치가 아예 실패함.
+    """
+    text = raw_item_name.strip()
+    for suffix in _PACKAGING_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+        text = text.replace(f" {suffix}", "")
+    return text.replace(" ", "").strip()
+
+
+def search_processed_items(raw_item_name: str) -> list[dict[str, Any]]:
+    """사용자가 언급한 가공식품명을 정규화해서 price_gokr_items에서 부분일치(ILIKE) 검색.
+
+    매칭되는 상품이 여러 개면 전부 반환(단일 상품으로 임의로 좁히지 않음) — 매칭 없으면 빈 리스트.
+    """
+    keyword = _normalize_search_keyword(raw_item_name)
+    if not keyword:
+        return []
+
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT good_id, good_name FROM price_gokr_items WHERE good_name ILIKE %s ORDER BY good_name;",
+            (f"%{keyword}%",),
+        )
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    return [{"good_id": good_id, "good_name": good_name} for good_id, good_name in rows]
 
 
 def delete_old_snapshots(retention_days: int = 30) -> int:

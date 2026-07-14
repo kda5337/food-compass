@@ -158,16 +158,67 @@ CREATE INDEX IF NOT EXISTS idx_price_gokr_snapshot_fetched_at
 
 
 -- ============================================================
--- [6] RLS(Row Level Security) 설정
+-- [6] price_gokr_store_regions
+--     역할: 참가격 매장을 8개 권역(서울/경기도/강원도/인천/전라도/경상도/충청도/제주도)으로
+--          분류 — 남도/북도는 구분 안 하고 광역시는 지리적으로 가까운 도에 합침
+--          (경상도=경남+경북+부산+대구+울산, 전라도=전남+전북+광주, 충청도=충남+충북+대전+세종).
+--          분류 로직: app/tools/region.py의 classify_region() — 저장된 주소(plmk_addr_basic/
+--          road_addr_basic)의 첫 토큰으로 판정.
+--     price_gokr_stores와 분리한 이유: 주소 원본 데이터(마스터)와 우리가 자체적으로 내린
+--          분류 판단(파생 데이터)을 구분하기 위함 — 분류 기준이 바뀌어도 원본 마스터를
+--          건드리지 않고 이 테이블만 재계산하면 됨.
+--     갱신: 매장 주소는 거의 안 바뀌므로 fetch 스크립트가 매번 UPSERT만 함(삭제 없음).
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS price_gokr_store_regions (
+    entp_id        TEXT        PRIMARY KEY,
+    region         TEXT        NOT NULL,  -- 서울/경기도/강원도/인천/전라도/경상도/충청도/제주도
+    classified_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_gokr_store_regions_region
+    ON price_gokr_store_regions (region);
+
+
+-- ============================================================
+-- [7] price_gokr_regional_avg (VIEW)
+--     역할: "같은 상품을 지역별로 나눠서 평균을 낸다"는 요구사항을 그대로 구현 —
+--          예) 꽃소금의 서울 평균가, 꽃소금의 경기도 평균가 ...
+--     물리 테이블이 아니라 VIEW로 만든 이유: price_gokr_snapshot(가격)·price_gokr_items
+--          (품목명)·price_gokr_store_regions(지역)를 그때그때 JOIN해서 계산하므로 별도
+--          갱신 스크립트 없이 항상 최신 상태를 반영함. good_inspect_day별로 그룹핑되므로
+--          특정 조사일 기준 지역별 평균도 그대로 조회 가능(과거 데이터 손실 없음).
+-- ============================================================
+
+CREATE OR REPLACE VIEW price_gokr_regional_avg
+WITH (security_invoker = true)  -- 뷰가 소유자 권한이 아니라 조회하는 role의 권한으로 실행되도록
+                                 -- 강제 — 안 그러면 기반 테이블의 anon 차단 정책을 뷰가 우회할 수 있음
+AS
+SELECT
+    r.region,
+    i.good_id,
+    i.good_name,
+    sn.good_inspect_day,
+    ROUND(AVG(sn.good_price), 1) AS avg_price,
+    COUNT(*) AS sample_count
+FROM price_gokr_snapshot sn
+JOIN price_gokr_items i ON i.good_id = sn.good_id
+JOIN price_gokr_store_regions r ON r.entp_id = sn.entp_id
+GROUP BY r.region, i.good_id, i.good_name, sn.good_inspect_day;
+
+
+-- ============================================================
+-- [8] RLS(Row Level Security) 설정
 --     백엔드 전용 서비스이므로 service_role 키로만 접근
 --     anon / authenticated 역할 차단 (보안 기본값)
 -- ============================================================
 
-ALTER TABLE price_snapshot      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE query_log           ENABLE ROW LEVEL SECURITY;
-ALTER TABLE price_gokr_items    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE price_gokr_stores   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE price_gokr_snapshot ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_snapshot            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE query_log                 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_gokr_items          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_gokr_stores         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_gokr_snapshot       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE price_gokr_store_regions  ENABLE ROW LEVEL SECURITY;
 
 -- service_role은 RLS를 자동으로 우회하므로 별도 정책 불필요
 -- 아래는 명시적 차단 (anon 키로 직접 접근 방지)
@@ -195,8 +246,12 @@ DROP POLICY IF EXISTS "deny_anon_price_gokr_snapshot" ON price_gokr_snapshot;
 CREATE POLICY "deny_anon_price_gokr_snapshot" ON price_gokr_snapshot
     FOR ALL TO anon USING (FALSE);
 
+DROP POLICY IF EXISTS "deny_anon_price_gokr_store_regions" ON price_gokr_store_regions;
+CREATE POLICY "deny_anon_price_gokr_store_regions" ON price_gokr_store_regions
+    FOR ALL TO anon USING (FALSE);
+
 -- ============================================================
--- [7] 초기 데이터
+-- [9] 초기 데이터
 --     실데이터는 GitHub Actions cron 적재 스크립트(추후 작성)가 채움.
 --     이 스키마 파일에는 샘플 INSERT 없음 — 컬럼이 원본 API 응답 그대로라
 --     손으로 채운 샘플이 실데이터와 어긋날 위험이 큼.

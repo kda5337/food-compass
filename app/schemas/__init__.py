@@ -1,4 +1,4 @@
-from .RouterOutput import ParseQuery
+from .RouterOutput import ParseQuery, ValidateQuery
 from .schemas import (
     JudgePriceOutput,
     RawPriceInput,
@@ -10,6 +10,7 @@ from .schemas import (
 __all__ = [
     "RouterOutput",
     "ParseQuery",
+    "ValidateQuery",
     "RawPriceInput",
     "RawPriceOutput",
     "JudgePriceOutput",
