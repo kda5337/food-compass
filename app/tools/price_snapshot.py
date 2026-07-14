@@ -120,6 +120,20 @@ def get_latest_prices(item_name: str) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
+_SIMILAR_ITEM_NAME_LIMIT = 20
+
+
+def _escape_like_pattern(keyword: str) -> str:
+    """ILIKE 패턴에 쓰기 전에 keyword 안의 LIKE 메타문자(%, _)를 리터럴로 이스케이프.
+
+    [2026-07-15 코드 리뷰 반영] keyword는 Router가 사용자 입력에서 추출한 품목명이라
+    "%"나 "_"가 그대로 들어있으면 리터럴 문자가 아니라 LIKE 와일드카드로 해석돼 의도치
+    않게 넓게 매칭될 수 있음 — PostgreSQL은 별도 ESCAPE 절 없이도 기본 이스케이프
+    문자가 백슬래시라 이렇게 이스케이프해두면 그대로 리터럴 취급됨(직접 검증함).
+    """
+    return keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def search_similar_item_names(keyword: str) -> list[str]:
     """정확히 일치하는 품목명이 없을 때 쓰는 ILIKE 부분일치 폴백 검색.
 
@@ -127,13 +141,17 @@ def search_similar_item_names(keyword: str) -> list[str]:
     정확히 "고추"라는 품목명은 없어서 매번 KAMIS를 못 찾은 것으로 처리되고 참가격
     (data.go.kr)으로 새고 있었음(KAMIS에 실제로 데이터가 있는데도 우선순위가 밀리던 문제).
     get_latest_prices()의 정확 일치가 실패했을 때만 이 함수로 관련 품목명 후보를 찾는다.
+
+    [2026-07-15 코드 리뷰 반영] 매칭 후보 수를 LIMIT으로 제한 — 호출부(get_raw_price_node)가
+    후보 하나마다 추가로 get_latest_prices() 쿼리를 날리므로, 과도하게 넓은 키워드가
+    들어와도 DB 부하가 무한정 커지지 않도록 방어.
     """
     conn = _get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT DISTINCT item_name FROM price_snapshot WHERE item_name ILIKE %s ORDER BY item_name;",
-            (f"%{keyword}%",),
+            "SELECT DISTINCT item_name FROM price_snapshot WHERE item_name ILIKE %s ORDER BY item_name LIMIT %s;",
+            (f"%{_escape_like_pattern(keyword)}%", _SIMILAR_ITEM_NAME_LIMIT),
         )
         rows = cur.fetchall()
         cur.close()

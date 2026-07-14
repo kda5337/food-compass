@@ -446,7 +446,53 @@ def _opening_conflicts_with_status(answer: str, status: str | None) -> bool:
     return False
 
 
-def _judgment_mentioned(item_name: str, answer: str) -> bool:
+# [2026-07-15 추가] 실제 관측: "돼지 갈비" 답변에서 실제 평년 대비 등락률(month_diff_pct)이
+# +4.7%인데 LLM이 "167.4% 상승"이라고 답변에 써서 완전히 지어낸 수치가 그대로 나간 것을
+# 확인함 — 지금까지의 하드개런티는 품목명 언급/판정 어조만 검증했지 답변에 등장하는
+# "숫자 자체"가 실제 데이터와 일치하는지는 전혀 검증하지 않고 있었음. 답변에 등장하는
+# 모든 퍼센트 수치가 judgments의 실제 diff_pct/month_diff_pct 값 중 하나와 (반올림 오차
+# 허용 범위 내에서) 일치하는지 확인 — 근거 없는 수치가 하나라도 있으면 폴백.
+_PERCENT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
+_PERCENT_TOLERANCE = 0.15
+
+
+def _known_percentage_magnitudes(judgments: list[dict]) -> set[float]:
+    """실제 diff_pct/month_diff_pct의 절대값 집합.
+
+    [2026-07-15 확인] 절대값으로만 비교하는 이유 — LLM이 "4.8% 하락"처럼 방향을 부호가
+    아니라 단어("하락"/"내려서")로 표현하는 경우가 흔한데, 실데이터로 4번 반복 호출해보니
+    이런 정상 답변까지 부호가 다르다는 이유로 오탐돼 매번 폴백되는 걸 확인함(단순 서명 비교는
+    과함) — 부호는 무시하고 크기(절대값)만 실제 데이터와 맞는지 확인한다.
+    """
+    values: set[float] = set()
+    for j in judgments:
+        for field in ("diff_pct", "month_diff_pct"):
+            value = j.get(field)
+            if value is not None:
+                values.add(round(abs(value), 1))
+    return values
+
+
+def _answer_has_fabricated_percentage(answer: str, judgments: list[dict]) -> bool:
+    known_magnitudes = _known_percentage_magnitudes(judgments)
+    if not known_magnitudes:
+        return False
+    for raw in _PERCENT_RE.findall(answer):
+        pct = abs(float(raw))
+        if not any(abs(pct - k) <= _PERCENT_TOLERANCE for k in known_magnitudes):
+            return True
+    return False
+
+
+def _compound_base(item_name: str) -> str | None:
+    """"돼지 갈비" -> "돼지". 합성(품목+부위) 이름이 아니면 None."""
+    return item_name.split(" ", 1)[0] if " " in item_name else None
+
+
+_SPECIES_PROXIMITY_WINDOW = 10
+
+
+def _judgment_mentioned(item_name: str, answer: str, ambiguous_species: bool) -> bool:
     """답변이 이 판정 항목을 실제로 언급하고 있는지 확인.
 
     [2026-07-15 확인] "돼지 갈비"처럼 "품목 부위" 합성 이름은 LLM이 자연스럽게 "돼지"를
@@ -454,11 +500,29 @@ def _judgment_mentioned(item_name: str, answer: str) -> bool:
     피함), 전체 문자열을 그대로 대조하면 정상 답변인데도 불필요하게 템플릿로 폴백되는
     문제가 있었음 — _product_core_name()과 동일한 이유로, 부위명(마지막 토큰)만으로도
     언급된 것으로 인정한다.
+
+    [2026-07-15 코드 리뷰 반영] 단, 이번 판정 목록에 서로 다른 축종(예: 돼지+소)이 함께
+    섞여 있으면(ambiguous_species=True) 부위명만으론 어느 축종 얘기인지 모호함 —
+    "돼지 갈비" 판정인데 답변엔 "소 갈비"만 있어도 "갈비"만 있으면 잘못 통과해버림.
+    처음엔 "품목명(base)도 답변 어딘가에 있으면 통과"로 짰는데, "돼지고기랑 소고기
+    가격을 보면, 소 갈비는..."처럼 서두에 "돼지고기"가 언급되고 실제로는 "소 갈비"만
+    설명하는 문장에서 여전히 통과해버리는 걸 직접 테스트로 확인함 — 단순 존재 여부가
+    아니라, 부위명이 등장하는 바로 그 위치 근처(앞 10자 이내)에 품목명이 실제로 붙어
+    있는지까지 확인해야 함. 축종이 하나뿐이면(기존처럼) 부위명만으로 충분.
     """
     if item_name in answer:
         return True
     core = item_name.rsplit(" ", 1)[-1]
-    return core in answer
+    if not ambiguous_species:
+        return core in answer
+    base = _compound_base(item_name)
+    if base is None:
+        return core in answer
+    for match in re.finditer(re.escape(core), answer):
+        window_start = max(0, match.start() - _SPECIES_PROXIMITY_WINDOW)
+        if base in answer[window_start : match.start()]:
+            return True
+    return False
 
 
 def _price_facts(judgments: list[dict], substitutes: list[str]) -> str:
@@ -523,6 +587,8 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     # 있었던 것 — 이제 그대로 재사용.
     primary_status = _primary_status(judgments)
     opening_line = _select_opening_line(judgments)
+    species_bases = {b for j in judgments if (b := _compound_base(j["item_name"])) is not None}
+    ambiguous_species = len(species_bases) > 1
     context_parts = [
         f"사용자 질문: {state.get('user_query', '')}",
     ]
@@ -543,7 +609,7 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
         # 생략하는 경우가 있음(자유 문장 생성이라 확률적) — 어떤 품목에 대한 답변인지는
         # 사용자가 항상 알 수 있어야 하는 하드 요구사항이라, 프롬프트 지시만으론 보장이 안 돼서
         # 코드에서 직접 검증하고 누락 시 이미 품목명을 포함하는 템플릿 답변으로 폴백시킴.
-        if not any(_judgment_mentioned(j["item_name"], answer) for j in judgments):
+        if not any(_judgment_mentioned(j["item_name"], answer, ambiguous_species) for j in judgments):
             print(f"[generate_answer_node] LLM 답변에 품목명 누락, 템플릿 답변으로 폴백: {answer!r}")
             answer = _template_answer(judgments, substitutes)
         elif _opening_conflicts_with_status(answer, primary_status):
@@ -551,6 +617,12 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
             # 조금 비싼 편이에요!"로 시작해 실제 판정과 정반대로 답하는 걸 실제로 확인함 —
             # 위에서 시작 문장을 지정해줘도 LLM이 어길 수 있으니 최종 방어선으로 검증.
             print(f"[generate_answer_node] 첫 문장이 판정 결과와 모순, 템플릿 답변으로 폴백: {answer!r}")
+            answer = _template_answer(judgments, substitutes)
+        elif _answer_has_fabricated_percentage(answer, judgments):
+            # [2026-07-15 추가] "돼지 갈비" 답변에서 실제 평년 대비 등락률(+4.7%)과 전혀
+            # 무관한 "167.4% 상승"이라는 수치가 그대로 나간 걸 실제로 확인함 — 품목명·어조
+            # 검증만으론 못 잡는 완전히 지어낸 숫자를 잡기 위한 최종 방어선.
+            print(f"[generate_answer_node] 답변에 근거 없는 퍼센트 수치 발견, 템플릿 답변으로 폴백: {answer!r}")
             answer = _template_answer(judgments, substitutes)
     except Exception as e:
         # 함수 docstring에 원래 "실패 시 고정 템플릿으로 폴백"이라고 적혀 있었는데
