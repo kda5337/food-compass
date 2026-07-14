@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,17 +14,19 @@ from app.prompts.prompts import (
     ANSWER_PRICE_LINE,
     ANSWER_PRICE_WITH_AMOUNT_AS_OF_LINE,
     ANSWER_PRICE_WITH_AMOUNT_LINE,
+    ANSWER_PROCESSED_UNSUPPORTED_LINE,
     ANSWER_SUBSTITUTE_LINE,
     ANSWER_UNSUPPORTED_LINE,
     COMPARISON_ANSWER_SYSTEM_PROMPT,
     KNOWLEDGE_GENERATION_SYSTEM_PROMPT,
     KNOWLEDGE_STUB_RESPONSE,
     OFFTOPIC_RESPONSE,
+    PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT,
 )
 from app.tools.item_alias import resolve_processed_alias
 from app.tools.judge import parse_price  # noqa
 from app.tools.normalize import rice_price_per_bowl
-from app.tools.price_gokr_snapshot import get_processed_price
+from app.tools.price_gokr_snapshot import get_processed_price, search_processed_items
 from app.tools.vector_store import get_collection
 
 from .state import AgentState
@@ -198,6 +201,112 @@ def compare_items_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+def search_processed_price_node(state: AgentState) -> dict[str, Any]:
+    """[가공식품 단독 조회] KAMIS에 없는 품목(예: "참치캔")을 참가격(price_gokr)에서
+    부분일치로 검색해 매칭되는 상품 전부의 평균가를 조회 — 비쌈/적정 판정은 하지 않음.
+
+    ChromaDB 유사도 검색으로 상품 1개만 콕 집는 방식도 검토했으나, "소"를 검색했을 때
+    "천일염"이 나왔던 것처럼 엉뚱한 상품이 잘못 골라질 위험이 있어(2026-07-14 사용자 확인)
+    매칭되는 상품을 전부 보여주는 방식을 택함 — 잘못된 단일 매칭 자체가 발생할 수 없음.
+    """
+    price_data = state.get("price_data", [])
+    results = []
+    for item in price_data:
+        matches = search_processed_items(item["item_name"])
+        products = []
+        for match in matches:
+            price_info = get_processed_price(match["good_name"])
+            if price_info:
+                products.append(
+                    {
+                        "good_name": match["good_name"],
+                        "avg_price": price_info["avg_price"],
+                        "sample_count": price_info["sample_count"],
+                    }
+                )
+        results.append(
+            {
+                "item_name": item["item_name"],
+                "found": bool(products),
+                "products": products,
+            }
+        )
+    return {"processed_prices": results}
+
+
+def _processed_price_facts(results: list[dict]) -> str:
+    """가공식품 단독 조회 답변 생성 LLM에게 넘겨줄 근거 데이터 — 이 안에 없는 수치는 지어내면 안 됨."""
+    lines = []
+    for r in results:
+        if not r["found"]:
+            lines.append(f"- {r['item_name']}: 가격 데이터 없음(지원하지 않는 품목 — 가격을 지어내지 말 것)")
+            continue
+        lines.append(f"- {r['item_name']} 검색 결과 (판정 없이 평균가만 제공):")
+        for p in r["products"]:
+            lines.append(f"  - {p['good_name']}: 평균 {p['avg_price']}원 (매장 {p['sample_count']}곳 기준)")
+    return "\n".join(lines)
+
+
+def _template_processed_price_answer(results: list[dict]) -> str:
+    """가공식품 단독 조회 LLM 호출 실패 시 사용하는 고정 템플릿."""
+    lines = []
+    for r in results:
+        if not r["found"]:
+            lines.append(ANSWER_PROCESSED_UNSUPPORTED_LINE.format(item=r["item_name"]))
+            continue
+        product_lines = ", ".join(f"{p['good_name']} 평균 {p['avg_price']}원" for p in r["products"])
+        lines.append(f"{r['item_name']}: {product_lines}")
+    return "\n".join(lines)
+
+
+def _product_core_name(good_name: str) -> str:
+    """"동원참치 라이트스탠다드(150g)" -> "동원참치 라이트스탠다드" — 괄호 안 규격 표기를 뗀 핵심명.
+
+    LLM이 답변을 자연스럽게 쓰면서 "(150g)" -> "150g"처럼 괄호를 없애거나 띄어쓰기를
+    살짝 바꾸는 경우가 흔해서(실제로 관측함), 전체 상품명을 그대로 문자열 대조하면
+    정상 답변인데도 불필요하게 폴백되는 문제가 있어 핵심명만 비교.
+    """
+    return re.sub(r"\(.*\)\s*$", "", good_name).strip()
+
+
+def _processed_price_answer_covers_results(answer: str, results: list[dict]) -> bool:
+    """답변이 실제 조회 결과를 반영하고 있는지 확인.
+
+    [2026-07-14 확인] r["item_name"]은 사용자가 부른 원문 그대로(예: "참치캔")라, LLM이
+    매칭된 실제 상품명(예: "동원참치 라이트스탠다드")으로 자연스럽게 답하면 원문 "참치캔"이
+    답변에 안 남는 경우가 많음 — 이건 정상 답변인데 원문 문자열만 확인하면 불필요하게
+    폴백되므로, "찾음" 케이스는 매칭된 상품명(핵심명 기준) 중 하나라도 있는지로,
+    "못 찾음" 케이스만 item_name으로 확인.
+    """
+    for r in results:
+        if r["found"]:
+            if any(_product_core_name(p["good_name"]) in answer for p in r["products"]):
+                return True
+        elif r["item_name"] in answer:
+            return True
+    return False
+
+
+def _generate_processed_price_answer(results: list[dict], user_query: str) -> str:
+    context = f"사용자 질문: {user_query}\n가공식품 가격 조회 결과:\n{_processed_price_facts(results)}"
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(content=PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT),
+                HumanMessage(content=context),
+            ]
+        )
+        content = response.content
+        answer = content if isinstance(content, str) else str(content)
+        if not _processed_price_answer_covers_results(answer, results):
+            print(f"[generate_answer_node] 가공식품 답변에 조회 결과 누락, 템플릿 답변으로 폴백: {answer!r}")
+            answer = _template_processed_price_answer(results)
+    except Exception as e:
+        print(f"[generate_answer_node] 가공식품 LLM 호출 실패, 템플릿 답변으로 폴백: {e!r}")
+        answer = _template_processed_price_answer(results)
+    return answer
+
+
 def _comparison_facts(comparison: dict) -> str:
     """비교형 답변 생성 LLM에게 넘겨줄 근거 데이터 — 이 안에 없는 수치는 지어내면 안 됨."""
     raw_as_of = comparison.get("raw_price_as_of")
@@ -320,6 +429,10 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     comparison = state.get("comparison")
     if comparison:
         return {"answer": _generate_comparison_answer(comparison, state.get("user_query", ""))}
+
+    processed_prices = state.get("processed_prices")
+    if processed_prices:
+        return {"answer": _generate_processed_price_answer(processed_prices, state.get("user_query", ""))}
 
     judgments = state.get("judgment", [])
     if not judgments:

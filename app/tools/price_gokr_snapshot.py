@@ -325,6 +325,54 @@ def get_processed_price(good_name: str) -> dict[str, Any] | None:
     }
 
 
+# [2026-07-14 추가] 가공식품 단독 조회(예: "참치캔 얼마야?") 전용 — 사용자가 부르는 이름이
+# price_gokr_items의 정확한 상품명과 다를 수 있어서(예: "참치캔" vs "동원참치 라이트스탠다드
+# (150g)") 부분일치로 검색. ChromaDB 유사도 검색(가장 가까운 상품 1개만 반환)도 검토했으나,
+# "소" 검색 시 "천일염"이 나왔던 것처럼 엉뚱한 상품이 잘못 골라질 위험이 있어 기각 —
+# 대신 매칭되는 상품을 전부 찾아서 각각의 평균가를 다 보여주는 방식으로 그 위험 자체를 없앰
+# (사용자 확인, 2026-07-14).
+_PACKAGING_SUFFIXES = ("통조림", "캔", "병", "팩", "봉", "개입", "세트")
+
+
+def _normalize_search_keyword(raw_item_name: str) -> str:
+    """"동원 참치 캔" 같은 표현에서 포장 단위 단어를 떼어내고 공백을 제거해 검색 키워드로 변환.
+
+    price_gokr_items의 상품명엔 "캔"/"통조림" 같은 포장 단어가 거의 안 나오고(수량은
+    "(4캔)"처럼 괄호 안에 붙음), 라우터가 추출한 품목명엔 이런 단어가 그대로 남아있는 경우가
+    많아서(예: "동원 참치 캔") 이 단어들을 떼지 않으면 ILIKE 부분일치가 아예 실패함.
+    """
+    text = raw_item_name.strip()
+    for suffix in _PACKAGING_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+        text = text.replace(f" {suffix}", "")
+    return text.replace(" ", "").strip()
+
+
+def search_processed_items(raw_item_name: str) -> list[dict[str, Any]]:
+    """사용자가 언급한 가공식품명을 정규화해서 price_gokr_items에서 부분일치(ILIKE) 검색.
+
+    매칭되는 상품이 여러 개면 전부 반환(단일 상품으로 임의로 좁히지 않음) — 매칭 없으면 빈 리스트.
+    """
+    keyword = _normalize_search_keyword(raw_item_name)
+    if not keyword:
+        return []
+
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT good_id, good_name FROM price_gokr_items WHERE good_name ILIKE %s ORDER BY good_name;",
+            (f"%{keyword}%",),
+        )
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    return [{"good_id": good_id, "good_name": good_name} for good_id, good_name in rows]
+
+
 def delete_old_snapshots(retention_days: int = 30) -> int:
     """good_inspect_day가 (오늘 - retention_days)보다 오래되고, 테이블에 남아있는
     가장 최신 good_inspect_day보다도 오래된 row만 삭제. 삭제 건수 반환.
