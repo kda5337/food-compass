@@ -17,6 +17,7 @@ from app.prompts.prompts import (
     ANSWER_PROCESSED_UNSUPPORTED_LINE,
     ANSWER_SUBSTITUTE_LINE,
     ANSWER_UNSUPPORTED_LINE,
+    COMMON_ANSWER_SYSTEM_PROMPT,
     COMPARISON_ANSWER_SYSTEM_PROMPT,
     KNOWLEDGE_GENERATION_SYSTEM_PROMPT,
     KNOWLEDGE_STUB_RESPONSE,
@@ -47,6 +48,19 @@ def _get_llm() -> ChatUpstage:
 llm = _get_llm()
 
 
+def _invoke_with_prompts(specific_prompt: str, context: str):
+    """공통 프롬프트(COMMON_ANSWER_SYSTEM_PROMPT) + 노드별 프롬프트를 각각 별도의
+    SystemMessage로 함께 전달 — 페르소나·어투·이모지 개수 등 공통 원칙은 한 곳에서만
+    관리하고, 노드별 프롬프트에는 그 노드만의 고유 규칙만 남기기 위함(2026-07-14 프롬프트 세분화)."""
+    return llm.invoke(
+        [
+            SystemMessage(content=COMMON_ANSWER_SYSTEM_PROMPT),
+            SystemMessage(content=specific_prompt),
+            HumanMessage(content=context),
+        ]
+    )
+
+
 def search_knowledge_node(state: AgentState) -> dict[str, Any]:
     """가격과 무관한 지식(보관법·대체품·제철정보 등) 질문에 대한 답변 생성."""
     items = state.get("items", [])
@@ -56,12 +70,7 @@ def search_knowledge_node(state: AgentState) -> dict[str, Any]:
     context = f"사용자 질문: {user_query}\n관련 품목: {item}"
 
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=KNOWLEDGE_GENERATION_SYSTEM_PROMPT),
-                HumanMessage(content=context),
-            ]
-        )
+        response = _invoke_with_prompts(KNOWLEDGE_GENERATION_SYSTEM_PROMPT, context)
         return {"knowledge_result": response.content}
     except Exception:
         return {"knowledge_result": KNOWLEDGE_STUB_RESPONSE.format(item=item)}
@@ -290,12 +299,7 @@ def _processed_price_answer_covers_results(answer: str, results: list[dict]) -> 
 def _generate_processed_price_answer(results: list[dict], user_query: str) -> str:
     context = f"사용자 질문: {user_query}\n가공식품 가격 조회 결과:\n{_processed_price_facts(results)}"
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT),
-                HumanMessage(content=context),
-            ]
-        )
+        response = _invoke_with_prompts(PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT, context)
         content = response.content
         answer = content if isinstance(content, str) else str(content)
         if not _processed_price_answer_covers_results(answer, results):
@@ -335,12 +339,7 @@ def _template_comparison_answer(comparison: dict) -> str:
 def _generate_comparison_answer(comparison: dict, user_query: str) -> str:
     context = f"사용자 질문: {user_query}\n비교 데이터:\n{_comparison_facts(comparison)}"
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=COMPARISON_ANSWER_SYSTEM_PROMPT),
-                HumanMessage(content=context),
-            ]
-        )
+        response = _invoke_with_prompts(COMPARISON_ANSWER_SYSTEM_PROMPT, context)
         content = response.content
         answer = content if isinstance(content, str) else str(content)
         if comparison["raw_item"] not in answer or comparison["processed_item"] not in answer:
@@ -454,12 +453,7 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     context = "\n".join(context_parts)
 
     try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=ANSWER_GENERATION_SYSTEM_PROMPT),
-                HumanMessage(content=context),
-            ]
-        )
+        response = _invoke_with_prompts(ANSWER_GENERATION_SYSTEM_PROMPT, context)
         answer = response.content
         # [2026-07-14 추가] 프롬프트에 "품목명을 반드시 언급할 것"을 지시해도 LLM이 가끔
         # 생략하는 경우가 있음(자유 문장 생성이라 확률적) — 어떤 품목에 대한 답변인지는
