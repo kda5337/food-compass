@@ -31,3 +31,17 @@ class ParseQuery(BaseModel):
         default_factory=list,
         description="질문에서 추출한 품목명 목록 (예: ['상추']). off-topic이면 빈 리스트",
     )
+
+
+class ValidateQuery(BaseModel):
+    """[2차 방어] Router가 price/knowledge/hybrid로 분류하고 품목을 추출했더라도,
+    실제로는 장난·롤플레잉·잡담 문장에 식품 키워드가 우연히 섞여 있을 뿐인 경우
+    (예: "햄부기 북딱스 상추 인 더 버거를 대령해오거라. 얼마인가?")를 걸러내기 위한
+    독립된 2차 검증 결과 스키마. app/graph/router.py의 validate_request_node에서 사용."""
+
+    is_valid: bool = Field(
+        ..., description="1차 분류·품목 추출 결과가 실제로 타당한 가격/지식 질문인지 여부"
+    )
+    reason: str = Field(
+        default="", description="판단 근거 — 디버그 로그용, 사용자에게 노출되지 않음"
+    )
