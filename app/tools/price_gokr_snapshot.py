@@ -14,6 +14,8 @@ import psycopg2.extras
 from dotenv import load_dotenv
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
+from app.tools.region import classify_region
+
 load_dotenv()
 
 _DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -154,6 +156,57 @@ def save_stores(stores: list[dict[str, Any]]) -> int:
     finally:
         conn.close()
     return len(stores)
+
+
+def save_store_regions() -> dict[str, int]:
+    """price_gokr_stores의 주소를 8개 권역으로 분류해 price_gokr_store_regions에 UPSERT.
+
+    분류 기준은 app/tools/region.py의 classify_region() 참고. 분류 불가한 매장(알려지지
+    않은 주소 첫 토큰)은 저장하지 않고 개수만 세서 반환 — 임의로 추정해서 저장하지 않음.
+    반환값: {"classified": 분류돼서 저장된 매장 수, "unclassified": 분류 실패 매장 수}
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT entp_id, plmk_addr_basic, road_addr_basic FROM price_gokr_stores;")
+        stores = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    rows = []
+    unclassified_ids = []
+    for entp_id, plmk_addr, road_addr in stores:
+        region = classify_region(plmk_addr) or classify_region(road_addr)
+        if region is None:
+            unclassified_ids.append(entp_id)
+            continue
+        rows.append((entp_id, region))
+
+    if unclassified_ids:
+        print(f"[save_store_regions] 지역 분류 실패 매장 {len(unclassified_ids)}개: {unclassified_ids}")
+
+    if rows:
+        conn = _get_conn()
+        try:
+            cur = conn.cursor()
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO price_gokr_store_regions (entp_id, region)
+                VALUES %s
+                ON CONFLICT (entp_id) DO UPDATE
+                    SET region = EXCLUDED.region,
+                        classified_at = NOW();
+                """,
+                rows,
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
+
+    return {"classified": len(rows), "unclassified": len(unclassified_ids)}
 
 
 def save_price_snapshot(rows: list[dict[str, Any]]) -> int:

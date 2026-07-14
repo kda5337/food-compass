@@ -30,6 +30,7 @@ from app.tools.price_gokr_snapshot import (
     delete_old_snapshots,
     save_items,
     save_price_snapshot,
+    save_store_regions,
     save_stores,
 )
 
@@ -46,24 +47,31 @@ _REQUEST_INTERVAL_SEC = 0.2
 
 
 def main() -> None:
-    print("[1/4] 식품 품목 마스터 조회 중...")
+    print("[1/5] 식품 품목 마스터 조회 중...")
     items = fetch_food_items()
     saved_items = save_items(items)
     print(f"      {len(items)}개 품목 조회 -> {saved_items}건 저장(UPSERT)")
 
-    print("[2/4] 판매처(매장) 마스터 조회 중...")
+    print("[2/5] 판매처(매장) 마스터 조회 중...")
     stores = fetch_all_stores()
     saved_stores = save_stores(stores)
     print(f"      {len(stores)}개 매장 조회 -> {saved_stores}건 저장(UPSERT)")
 
-    print("[3/4] 최신 조사일 탐색 중...")
+    print("[3/5] 매장 지역(8개 권역) 분류 중...")
+    region_result = save_store_regions()
+    print(
+        f"      분류 완료: {region_result['classified']}건, "
+        f"분류 실패: {region_result['unclassified']}건"
+    )
+
+    print("[4/5] 최신 조사일 탐색 중...")
     inspect_day = find_latest_inspect_day(_PROBE_GOOD_ID)
     if inspect_day is None:
         print("      최근 조사일을 찾지 못했습니다 — 조회 범위(21일)를 늘려야 할 수 있습니다.")
         sys.exit(1)
     print(f"      최신 조사일: {inspect_day}")
 
-    print(f"[4/4] {len(items)}개 품목의 {inspect_day}자 가격 조회 중...")
+    print(f"[5/5] {len(items)}개 품목의 {inspect_day}자 가격 조회 중...")
     total_saved = 0
     for i, item in enumerate(items, start=1):
         good_id = item["good_id"]
