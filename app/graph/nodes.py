@@ -392,6 +392,50 @@ def _template_answer(judgments: list[dict], substitutes: list[str]) -> str:
     return "\n".join(lines)
 
 
+# [2026-07-14 추가] "오이 지금 비싸?"를 실제로 5번 호출해보니 status="쌈"(저렴함)인데도
+# 5번 중 4번이 "지금은 조금 비싼 편이에요!"로 시작하는 걸 확인함 — 프롬프트로 "판정 결과를
+# 그대로 따르라"고 지시해도 시작 문장 선택 자체를 LLM의 자유 판단에 맡겨두면 diff_pct의
+# 부호를 잘못 해석하는 등으로 실제 판정과 정반대로 답할 위험이 큼(재현 확률 80%로 확인).
+# status는 이미 코드에서 확정된 값이라 LLM이 다시 판단할 이유가 없으므로, 시작 문장을
+# 코드에서 직접 골라 "반드시 이 문장 그대로 시작할 것"으로 강제하고(아래 _select_opening_line),
+# 그래도 어길 경우를 대비해 _opening_conflicts_with_status()로 한 번 더 검증한다.
+_STATUS_OPENING_LINES = {
+    "비쌈": "지금은 조금 비싼 편이에요!",
+    "적정": "요즘 가격은 무난한 편이에요.",
+    "쌈": "요즘 가격이 괜찮네요!!",
+}
+_EXPENSIVE_SIGNAL_WORDS = ("비싸", "비쌈")
+_CHEAP_SIGNAL_WORDS = ("저렴", "괜찮", "무난")
+
+
+def _primary_status(judgments: list[dict]) -> str | None:
+    """미지원이 아닌 첫 품목의 판정 상태 — 시작 문장 선택 기준(다품목이면 첫 번째 기준)."""
+    for j in judgments:
+        if j["status"] != _UNSUPPORTED_STATUS:
+            return j["status"]
+    return None
+
+
+def _select_opening_line(judgments: list[dict]) -> str | None:
+    status = _primary_status(judgments)
+    return _STATUS_OPENING_LINES.get(status) if status else None
+
+
+def _opening_conflicts_with_status(answer: str, status: str | None) -> bool:
+    """답변 첫 문장의 어조가 실제 판정(status)과 반대인지 확인 — "오이 지금 비싸?" 재현
+    버그(status=쌈인데 "비싼 편이에요!"로 시작)를 잡아내기 위한 하드 개런티."""
+    if status is None:
+        return False
+    first_sentence = re.split(r"[.!\n]", answer, maxsplit=1)[0]
+    has_expensive = any(w in first_sentence for w in _EXPENSIVE_SIGNAL_WORDS)
+    has_cheap = any(w in first_sentence for w in _CHEAP_SIGNAL_WORDS)
+    if status == "비쌈":
+        return has_cheap and not has_expensive
+    if status in ("적정", "쌈"):
+        return has_expensive and not has_cheap
+    return False
+
+
 def _price_facts(judgments: list[dict], substitutes: list[str]) -> str:
     """LLM에게 근거로 넘겨줄 판정 데이터 — 이 안에 없는 수치는 LLM이 지어내면 안 됨."""
     lines = []
@@ -452,8 +496,17 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     # (판정 상태 문구만 들어감 — "가격 정보가 답변에 안 나온다"는 문제의 원인).
     # 이미 있던 _price_facts()가 정확히 이 데이터를 다 채워서 만들어주는 함수인데 호출이 안 되고
     # 있었던 것 — 이제 그대로 재사용.
+    primary_status = _primary_status(judgments)
+    opening_line = _select_opening_line(judgments)
     context_parts = [
         f"사용자 질문: {state.get('user_query', '')}",
+    ]
+    if opening_line:
+        context_parts.append(
+            f'필수 시작 문장(반드시 이 문장을 그대로 답변의 첫 문장으로 사용할 것 — '
+            f'다른 표현으로 바꾸거나 생략하지 말 것): "{opening_line}"'
+        )
+    context_parts += [
         "가격 판정 결과:",
         _price_facts(judgments, substitutes),
     ]
@@ -467,6 +520,12 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
         # 코드에서 직접 검증하고 누락 시 이미 품목명을 포함하는 템플릿 답변으로 폴백시킴.
         if not any(j["item_name"] in answer for j in judgments):
             print(f"[generate_answer_node] LLM 답변에 품목명 누락, 템플릿 답변으로 폴백: {answer!r}")
+            answer = _template_answer(judgments, substitutes)
+        elif _opening_conflicts_with_status(answer, primary_status):
+            # [2026-07-14 추가] "오이 지금 비싸?"(status=쌈)를 5번 호출 중 4번이 "지금은
+            # 조금 비싼 편이에요!"로 시작해 실제 판정과 정반대로 답하는 걸 실제로 확인함 —
+            # 위에서 시작 문장을 지정해줘도 LLM이 어길 수 있으니 최종 방어선으로 검증.
+            print(f"[generate_answer_node] 첫 문장이 판정 결과와 모순, 템플릿 답변으로 폴백: {answer!r}")
             answer = _template_answer(judgments, substitutes)
     except Exception as e:
         # 함수 docstring에 원래 "실패 시 고정 템플릿으로 폴백"이라고 적혀 있었는데

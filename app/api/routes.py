@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from app.core.tracing import get_trace_callbacks
 from app.graph import compiled_graph
 from app.tools.price_cache import ping as db_ping
 
@@ -45,7 +46,17 @@ async def chat(request: ChatRequest):
         print(f"[/chat] ChatRequest 수신: query={state['user_query']}, region={state['region']}, unit={state['unit']}")
         try:
             async for mode, payload in compiled_graph.astream(
-                state, stream_mode=["updates", "messages"]
+                state,
+                stream_mode=["updates", "messages"],
+                # [2026-07-14] Langfuse 트레이싱(선택 가점) — 실제 /chat 트래픽만 추적.
+                # get_trace_callbacks()는 langfuse 미설치·키 미설정 시 빈 리스트를 반환해
+                # 기존 동작에 영향 없음(pytest의 compiled_graph.ainvoke() 직접 호출 경로는
+                # 이 config를 거치지 않으므로 트레이싱 대상이 아님).
+                config={
+                    "callbacks": get_trace_callbacks(),
+                    "run_name": "food-compass-chat",
+                    "metadata": {"langfuse_tags": ["chat"]},
+                },
             ):
                 if mode == "messages":
                     message_chunk, metadata = payload

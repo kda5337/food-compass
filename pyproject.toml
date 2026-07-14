@@ -33,6 +33,7 @@ dev = [
     "ruff>=0.15.21",
 ]
 stretch = [
+    "langchain>=1.3.13",
     "langfuse>=2.50.0",        # Day5: LLMOps 선택 가점 항목 (Trace)
 ]
 
