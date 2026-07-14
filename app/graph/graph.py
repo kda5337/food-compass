@@ -14,7 +14,7 @@ from .nodes import (
     search_processed_price_node,
     search_substitute_node,
 )
-from .router import router_node
+from .router import router_node, validate_request_node
 from .state import AgentState
 
 _EXPENSIVE_STATUS = "비쌈"
@@ -22,6 +22,13 @@ _EXPENSIVE_STATUS = "비쌈"
 
 def _route_decision(state: AgentState) -> str:
     return state.get("route", "off-topic")
+
+
+def _post_router_decision(state: AgentState) -> str:
+    """[2차 방어] router가 이미 off-topic으로 판단했으면 검증 LLM 호출을 아껴 바로
+    거절 응답으로 보내고, price/knowledge/hybrid일 때만 validate_request로 한 번 더
+    검증한다."""
+    return "off-topic" if state.get("route") == "off-topic" else "validate"
 
 
 def _post_resolve_decision(state: AgentState) -> str:
@@ -57,6 +64,7 @@ def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
     graph.add_node("router", router_node)
+    graph.add_node("validate_request", validate_request_node)
     graph.add_node("get_raw_price", get_raw_price_node)
     graph.add_node("resolve_processed_items", resolve_processed_items_node)
     graph.add_node("compare_items", compare_items_node)
@@ -70,6 +78,14 @@ def build_graph() -> StateGraph:
     graph.add_edge(START, "router")
     graph.add_conditional_edges(
         "router",
+        _post_router_decision,
+        {
+            "off-topic": "generate_offtopic",
+            "validate": "validate_request",
+        },
+    )
+    graph.add_conditional_edges(
+        "validate_request",
         _route_decision,
         {
             "price": "get_raw_price",
