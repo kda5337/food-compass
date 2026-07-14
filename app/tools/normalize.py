@@ -15,6 +15,11 @@ _WEIGHT_UNIT_TO_GRAM = {"kg": 1000, "g": 1}
 
 # 개수 기반 단위 (1개당으로 환산할 대상)
 _COUNT_UNITS = {"개", "속", "단", "포기", "마리", "봉", "팩", "모"}
+_TARGET_WEIGHT_TO_GRAM = {
+    "100g": 100,
+    "500g": 500,
+    "1kg": 1000,
+}
 
 # [설계 논의로 확정, 2026-07-14] 국립농산물품질관리원 등에서 흔히 쓰는 환산 기준:
 # 마른 
@@ -33,49 +38,52 @@ DRY_RICE_GRAMS_PER_BOWL = 90
 # `from app.tools.normalize import normalize_price_unit`로 가져다 쓰기만 함.
 # 로직 자체는 이동 전과 완전히 동일 — 순수 코드 위치 이동(변수/동작 변경 없음).
 def normalize_price_unit(
-    price: float | None, unit: str | None
-) -> tuple[float | None, str | None]:
-    """가격을 표준 단위로 환산.
+    last_week: float | None,
+    last_month: float | None,
+    avg: float | None,
+    source_unit: str | None,
+    target_unit: str | None,
+) -> tuple[float | None, float | None, float | None, str | None]:
+    """1주일전/1개월전/평년 가격을 source_unit(KAMIS 원본) 기준에서
+    target_unit(사용자 선택) 기준으로 일괄 환산.
 
-    - 무게 단위(kg, g)는 100g당 가격으로 변환.
-    - 개수 단위(개, 속, 단 등)는 1개당 가격으로 변환.
-    - unit이 없거나("" / None), 형식을 인식할 수 없으면 변환하지 않고 원본 그대로 반환.
-
-    예시:
-        normalize_price_unit(3000, "1kg")   -> (300.0, "100g")
-        normalize_price_unit(3000, "20kg")  -> (15.0, "100g")
-        normalize_price_unit(500, "100g")   -> (500.0, "100g")  # 이미 100g 기준
-        normalize_price_unit(5000, "10개")  -> (500.0, "1개")
-        normalize_price_unit(3000, "1개")   -> (3000.0, "1개")
-        normalize_price_unit(3000, "")      -> (3000, "")        # 스킵
-        normalize_price_unit(3000, "1속")   -> (3000.0, "1속")
+    - source_unit이 무게 단위(kg/g)면 target_unit 기준 가격으로 변환.
+    - source_unit이 개수 단위(개/속/단 등)면 1개당 가격으로 변환 (target_unit과 무관).
+    - source_unit이 없거나 형식을 인식할 수 없으면 변환하지 않고 원본 그대로 반환.
     """
-    if price is None or not unit:
-        return price, unit
+    if not source_unit:
+        return last_week, last_month, avg, source_unit
 
-    match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z가-힣]+)\s*$", unit.strip())
+    match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z가-힣]+)\s*$", source_unit.strip())
     if not match:
-        # "1kg" 같은 숫자+단위 형식이 아니면 인식 불가 — 변환 스킵
-        return price, unit
+        return last_week, last_month, avg, source_unit
 
     qty = float(match.group(1))
     unit_label = match.group(2)
 
+    def _convert(price: float | None) -> float | None:
+        if price is None:
+            return None
+        if unit_label in _WEIGHT_UNIT_TO_GRAM:
+            total_grams = qty * _WEIGHT_UNIT_TO_GRAM[unit_label]
+            if total_grams <= 0:
+                return price
+            target_grams = _TARGET_WEIGHT_TO_GRAM.get(target_unit, 100)
+            return round(price / total_grams * target_grams, 1)
+        if unit_label in _COUNT_UNITS:
+            if qty <= 0:
+                return price
+            return round(price / qty, 1)
+        return price
+
     if unit_label in _WEIGHT_UNIT_TO_GRAM:
-        total_grams = qty * _WEIGHT_UNIT_TO_GRAM[unit_label]
-        if total_grams <= 0:
-            return price, unit
-        normalized_price = round(price / total_grams * 100, 1)
-        return normalized_price, "100g"
+        normalized_unit = target_unit or "100g"
+    elif unit_label in _COUNT_UNITS:
+        normalized_unit = f"1{unit_label}"
+    else:
+        normalized_unit = source_unit
 
-    if unit_label in _COUNT_UNITS:
-        if qty <= 0:
-            return price, unit
-        normalized_price = round(price / qty, 1)
-        return normalized_price, f"1{unit_label}"
-
-    # 알려지지 않은 단위(예: "1단(500g)" 같은 복합 표기)는 변환하지 않고 그대로 반환
-    return price, unit
+    return _convert(last_week), _convert(last_month), _convert(avg), normalized_unit
 
 
 # [2026-07-14 신규, 시나리오 1: 쌀 vs 즉석밥] 위 normalize_price_unit()은 일반적인
@@ -89,7 +97,9 @@ def rice_price_per_bowl(price: float, unit: str | None) -> float | None:
     unit이 무게 단위(kg/g)로 인식되지 않으면(예: 형식 불명) None을 반환 — 임의로
     추정하지 않음.
     """
-    price_per_100g, normalized_unit = normalize_price_unit(price, unit)
+    _, _, price_per_100g, normalized_unit = normalize_price_unit(
+        None, None, price, unit, "100g"
+    )
     if price_per_100g is None or normalized_unit != "100g":
         return None
     return round(price_per_100g * DRY_RICE_GRAMS_PER_BOWL / 100, 1)

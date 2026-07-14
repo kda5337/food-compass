@@ -2,8 +2,10 @@
 장바구니 물가 판단 에이전트 - 터미널 체험용 CLI
 실행: .venv/Scripts/python.exe run.py
 """
-from app.graph import compiled_graph
 import asyncio
+
+from app.graph import compiled_graph
+
 
 async def main():
     print("=" * 50)

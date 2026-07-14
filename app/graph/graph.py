@@ -19,10 +19,8 @@ from .state import AgentState
 
 _EXPENSIVE_STATUS = "비쌈"
 
-
 def _route_decision(state: AgentState) -> str:
     return state.get("route", "off-topic")
-
 
 def _post_router_decision(state: AgentState) -> str:
     """[2차 방어] router가 이미 off-topic으로 판단했으면 검증 LLM 호출을 아껴 바로
@@ -62,7 +60,6 @@ def _post_judge_decision(state: AgentState) -> str:
 
 def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
-
     graph.add_node("router", router_node)
     graph.add_node("validate_request", validate_request_node)
     graph.add_node("get_raw_price", get_raw_price_node)
@@ -75,6 +72,7 @@ def build_graph() -> StateGraph:
     graph.add_node("generate_answer", generate_answer_node)
     graph.add_node("generate_offtopic", generate_offtopic_node)
 
+    
     graph.add_edge(START, "router")
     graph.add_conditional_edges(
         "router",

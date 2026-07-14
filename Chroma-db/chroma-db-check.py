@@ -1,5 +1,6 @@
-import chromadb
 from pprint import pprint
+
+import chromadb
 
 client = chromadb.PersistentClient(path="./chroma_db")
 

@@ -6,23 +6,23 @@ KAMIS(농수산물) + 참가격(생필품) 품목명을 가져와서 하나의 C
 - "식품(가공식품)" 카테고리는 KAMIS/참가격 어디에도 없어서 별도 API(data.go.kr) 연동이 필요합니다.
 """
 
-import os
-import sys
-import gc
-import shutil
 import asyncio
+import gc
+import os
+import shutil
+import sys
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from pathlib import Path
+
 import chromadb
 import httpx
 import requests
-import xml.etree.ElementTree as ET
-from pathlib import Path
-
-from dotenv import load_dotenv
-from tqdm import tqdm
-from collections import defaultdict
-from langchain_upstage import ChatUpstage
-from langchain_core.messages import HumanMessage, SystemMessage
 from chromadb.utils import embedding_functions
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_upstage import ChatUpstage
+from tqdm import tqdm
 
 # [2026-07-13 수정] KAMIS 요청에 app/tools/kamis_client.py의 legacy SSL 컨텍스트를 재사용하기 위해
 # 프로젝트 루트를 sys.path에 추가 (scripts/fetch_kamis_snapshot.py와 동일한 패턴)
@@ -293,6 +293,7 @@ def test_similar_search(
         results["distances"][0],
         results["ids"][0],
         results["metadatas"][0],
+        strict=True,
     ):
         original_name = (meta or {}).get("name")
 

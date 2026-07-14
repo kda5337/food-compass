@@ -6,7 +6,6 @@ import chromadb
 import matplotlib.pyplot as plt
 import pandas as pd
 from chromadb.config import Settings
-from chromadb.errors import NotFoundError
 from dotenv import load_dotenv
 from faker import Faker
 from langchain_google_genai import GoogleGenerativeAIEmbeddings

@@ -28,7 +28,12 @@ def _pct_diff(current: float | None, past: float | None) -> float | None:
     return round((current - past) / past * 100, 1)
 
 def judge_price(
-    dpr1: str, dpr7: str, dpr3: str | None = None, dpr5: str | None = None, unit: str | None = None,
+    dpr1: str,
+    dpr7: str,
+    dpr3: str | None = None,
+    dpr5: str | None = None,
+    source_unit: str | None = None,
+    target_unit: str | None = None,
 ) -> JudgePriceOutput:
     """1주일전가(dpr3)를 1개월전가(dpr5)와 비교하여 비쌈/적정/쌈 판정.
 
@@ -45,7 +50,14 @@ def judge_price(
     if last_week is None or last_month is None or last_month == 0:
         return JudgePriceOutput(status="적정", diff_pct=0.0)
 
-    normalized_price, normalized_unit = normalize_price_unit(last_week, unit)
+    print(f"judge_price: source_unit={source_unit}, target_unit={target_unit}")
+    normalized_last_week, normalized_last_month, normalized_avg, normalized_unit = normalize_price_unit(
+        last_week, last_month, avg, source_unit, target_unit
+    )
+    print(f"judge_price_normalized_unit: {normalized_unit}")
+
+    # 판정(diff_pct)은 % 계산이라 단위 환산과 무관하게 동일한 비율이 나오므로
+    # 원본 값(last_week/last_month) 그대로 사용해도 결과는 같음 — 그대로 유지
     diff_pct = (last_week - last_month) / last_month * 100
 
     if diff_pct > _EXPENSIVE_THRESHOLD:
@@ -55,22 +67,20 @@ def judge_price(
     else:
         status = "적정"
 
-    # [2026-07-14 제거] week_diff_pct는 _pct_diff(last_week, last_month)로 diff_pct와
-    # 완전히 동일한 계산이라(둘 다 1주일전 vs 1개월전) 라벨을 정확히 고치고 나니 답변에
-    # "1개월 전 대비 X%"가 중복으로 두 번 나오는 문제가 있어 필드 자체를 제거함
     month_diff_pct = _pct_diff(last_month, avg) if dpr5 is not None else None
 
     return JudgePriceOutput(
         status=status,
         diff_pct=round(diff_pct, 1),
         month_diff_pct=month_diff_pct,
-        normalized_price=normalized_price,
+        normalized_price=normalized_last_week,
         unit=normalized_unit,
     )
 
 
 def judge_price_node(state: AgentState) -> dict[str, Any]:
     price_data = state.get("price_data", [])
+    target_unit = state.get("unit")
     judgments = []
     for item in price_data:
         if not item.get("found", True):
@@ -91,6 +101,7 @@ def judge_price_node(state: AgentState) -> dict[str, Any]:
             item.get("dpr3", "-"),
             item.get("dpr5", "-"),
             item.get("unit"),
+            target_unit,
         )
         judgments.append(
             {
@@ -106,4 +117,11 @@ def judge_price_node(state: AgentState) -> dict[str, Any]:
                 "price_as_of": item.get("price_as_of"),
             }
         )
+        print(
+            f"[judge_price_node] item={item.get('item_name')!r}, "
+            f"target_unit={target_unit!r}, result.unit={result.unit!r}"
+        )  # 추가
+    print(f"[judge_price_node] 전체 judgments 유닛: {[j.get('unit') for j in judgments]}")  # 추가
+
+    
     return {"judgment": judgments}
