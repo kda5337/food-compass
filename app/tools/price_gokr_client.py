@@ -174,11 +174,21 @@ def find_latest_inspect_day(probe_good_id: str, max_lookback_days: int = 21) -> 
 
     전체 품목이 같은 조사일을 공유한다는 것을 여러 품목으로 실측 확인했으므로
     (2026-07-14), 이렇게 찾은 날짜를 이후 전체 품목 조회에 그대로 재사용하면 됨.
+
+    [2026-07-15 (4) 추가] fetch_prices_for_item 자체 재시도(3회)까지 다 소진해
+    예외가 올라오는 경우(예: 특정 날짜 조회 중 커넥션 타임아웃 지속)를 실제로 겪음 —
+    이전엔 이 루프에 try/except가 없어서 날짜 하나만 문제가 생겨도 최신 조사일 탐색
+    전체가 죽어 [5/5] 가격 조회 단계 자체를 못 갔음. 그 날짜는 "데이터 없음"과 동일하게
+    취급하고 하루 전으로 계속 탐색하도록 수정(scripts/fetch_price_gokr_snapshot.py의
+    per-item skip-and-continue와 동일한 방어 패턴).
     """
     day = date.today()
     for _ in range(max_lookback_days):
         candidate = day.strftime("%Y%m%d")
-        if fetch_prices_for_item(probe_good_id, candidate):
-            return candidate
+        try:
+            if fetch_prices_for_item(probe_good_id, candidate):
+                return candidate
+        except Exception as e:
+            print(f"[find_latest_inspect_day] {candidate} 조회 실패, 건너뜀: {e!r}")
         day -= timedelta(days=1)
     return None
