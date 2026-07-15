@@ -2,30 +2,10 @@
 from __future__ import annotations
 
 import json
-import os
-import urllib.parse
 from typing import Any
 
-import psycopg2
-from dotenv import load_dotenv
-
+from app.core.db import get_conn as _get_conn
 from app.schemas import RawPriceOutput
-
-load_dotenv()
-
-_DATABASE_URL = os.getenv("DATABASE_URL", "")
-
-
-def _get_conn():
-    url = urllib.parse.urlparse(_DATABASE_URL)
-    return psycopg2.connect(
-        host=url.hostname,
-        port=url.port or 5432,
-        dbname=url.path.lstrip("/"),
-        user=urllib.parse.unquote(url.username or ""),
-        password=urllib.parse.unquote(url.password or ""),
-        sslmode="require",
-    )
 
 
 def ping() -> bool:

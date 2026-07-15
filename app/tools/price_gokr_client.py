@@ -22,8 +22,15 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 load_dotenv()
+
+# [2026-07-15 추가] 457개 품목을 순회하며 매번 새 요청을 여는 fetch_prices_for_item에서
+# 실제로 "Read timed out"(urllib3 ReadTimeoutError -> requests.ConnectionError)이 발생해
+# 스크립트 전체가 중단된 것을 확인함(457개 중 50번째에서 실패, 이후 407개 미처리) —
+# 공공 API가 가끔 응답을 늦게 주는 것으로 보여 재시도로 완화.
+_RETRYABLE_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
 
 _BASE_URL = "http://openapi.price.go.kr/openApiImpl/ProductPriceInfoService/"
 
@@ -34,9 +41,27 @@ _FOOD_CATEGORY_PREFIXES = ("0301", "0302")
 
 
 def _service_key() -> str:
-    return os.environ["PRICE_GOKR_SERVICE_KEY"]
+    """[2026-07-15 추가] 이전엔 os.environ["PRICE_GOKR_SERVICE_KEY"]를 그대로 써서, 이
+    값이 빈 문자열일 때(예: GitHub Actions Secrets에 등록 자체가 안 된 경우 —
+    ${{ secrets.X }}는 미등록이어도 예외 없이 빈 문자열로 치환됨) API가 "ServiceKey="로
+    빈 채 호출돼 알아보기 힘든 404를 던졌음(실제 재현: price_gokr_daily_fetch cron 첫
+    실행에서 발생). 원인을 바로 알 수 있도록 여기서 먼저 명확한 에러로 막는다.
+    """
+    key = os.environ.get("PRICE_GOKR_SERVICE_KEY", "")
+    if not key:
+        raise RuntimeError(
+            "PRICE_GOKR_SERVICE_KEY가 비어있습니다. GitHub Actions Secrets에 "
+            "'PRICE_GOKR_SERVICE_KEY' 이름으로 등록돼 있는지 확인하세요 "
+            "(레포 Settings > Secrets and variables > Actions)."
+        )
+    return key
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+)
 def fetch_food_items() -> list[dict[str, Any]]:
     """전체 품목 카탈로그(604개) 중 식품 카테고리(0301/0302)만 필터링해서 반환."""
     res = requests.get(
@@ -68,6 +93,11 @@ def fetch_food_items() -> list[dict[str, Any]]:
     return items
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+)
 def fetch_all_stores() -> list[dict[str, Any]]:
     """전체 판매처(매장) 마스터 조회 (entpId 없이 호출하면 전체 목록 반환)."""
     res = requests.get(
@@ -100,8 +130,17 @@ def fetch_all_stores() -> list[dict[str, Any]]:
     return stores
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+)
 def fetch_prices_for_item(good_id: str, inspect_day: str) -> list[dict[str, Any]]:
-    """품목 하나(good_id)의 특정 조사일(YYYYMMDD) 매장별 가격 전체 조회."""
+    """품목 하나(good_id)의 특정 조사일(YYYYMMDD) 매장별 가격 전체 조회.
+
+    [2026-07-15 추가] 457개 품목을 순회하며 호출하는 도중 실제로 "Read timed out"이
+    발생해 스크립트 전체가 중단된 것을 확인함 — 최대 3회까지 지수 백오프로 재시도.
+    """
     res = requests.get(
         _BASE_URL + "getProductPriceInfoSvc.do",
         params={
@@ -135,11 +174,21 @@ def find_latest_inspect_day(probe_good_id: str, max_lookback_days: int = 21) -> 
 
     전체 품목이 같은 조사일을 공유한다는 것을 여러 품목으로 실측 확인했으므로
     (2026-07-14), 이렇게 찾은 날짜를 이후 전체 품목 조회에 그대로 재사용하면 됨.
+
+    [2026-07-15 (4) 추가] fetch_prices_for_item 자체 재시도(3회)까지 다 소진해
+    예외가 올라오는 경우(예: 특정 날짜 조회 중 커넥션 타임아웃 지속)를 실제로 겪음 —
+    이전엔 이 루프에 try/except가 없어서 날짜 하나만 문제가 생겨도 최신 조사일 탐색
+    전체가 죽어 [5/5] 가격 조회 단계 자체를 못 갔음. 그 날짜는 "데이터 없음"과 동일하게
+    취급하고 하루 전으로 계속 탐색하도록 수정(scripts/fetch_price_gokr_snapshot.py의
+    per-item skip-and-continue와 동일한 방어 패턴).
     """
     day = date.today()
     for _ in range(max_lookback_days):
         candidate = day.strftime("%Y%m%d")
-        if fetch_prices_for_item(probe_good_id, candidate):
-            return candidate
+        try:
+            if fetch_prices_for_item(probe_good_id, candidate):
+                return candidate
+        except Exception as e:
+            print(f"[find_latest_inspect_day] {candidate} 조회 실패, 건너뜀: {e!r}")
         day -= timedelta(days=1)
     return None

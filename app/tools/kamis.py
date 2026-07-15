@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.tools.judge import parse_price
-from app.tools.price_snapshot import get_latest_prices, search_similar_item_names
+from app.tools.price_snapshot import (
+    get_latest_prices,
+    get_latest_prices_by_kind_name,
+    search_similar_item_names,
+)
 
 if TYPE_CHECKING:
     from app.graph.state import AgentState
@@ -187,6 +191,18 @@ def get_raw_price_node(state: AgentState) -> dict[str, Any]:
                     rows.extend(get_latest_prices(name))
                 except Exception as e:
                     print(f"[get_raw_price] DB 조회 실패({name}): {e}")
+
+        if not rows:
+            # [2026-07-15 추가] "삼겹살"처럼 KAMIS에선 item_name이 아니라 "돼지"의
+            # kind_name(부위)일 뿐인 경우 — 위 두 단계(정확 일치/ILIKE)는 전부 item_name만
+            # 보므로 여전히 못 찾고 참가격으로 새고 있었음(실제 재현 확인). 이 품목명이
+            # 실은 부위명인지 확인해, 그 부위를 가진 품목(들)에서 **그 부위만** 가져온다
+            # (사용자 확인: "삼겹살"→돼지 삼겹살 1건만, "갈비"처럼 여러 동물에 겹치면
+            # →돼지 갈비 + 소 갈비처럼 각 동물의 그 부위만, 다른 부위까지 확장하진 않음).
+            try:
+                rows.extend(get_latest_prices_by_kind_name(item_name))
+            except Exception as e:
+                print(f"[get_raw_price] 부위명 매칭 실패: {e}")
 
         if not rows:
             price_data.append(

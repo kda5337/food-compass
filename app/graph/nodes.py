@@ -45,13 +45,44 @@ _N_SUBSTITUTES = 3
 # 노출되는 문제를 막기 위한 하드 개런티.
 _MARKDOWN_EMPHASIS_RE = re.compile(r"\*\*|__")
 
+# [2026-07-15 추가] "삼겹살"만 입력했을 때 LLM이 최종 답변 대신 "사용자가 삼겹살 가격을
+# 물어봤고... 이모지는 2개 이하로 제한합니다..."처럼 시스템 프롬프트 지시사항을 그대로
+# 되풀이하는 추론 과정/작성 계획을 답변으로 반환한 걸 실제로 확인함. 기존 하드개런티
+# (품목명 언급 체크)는 이런 유출 텍스트 안에도 실제 상품명이 포함돼 있어 통과시켜버림 —
+# 별도 탐지 필요.
+#
+# [2026-07-15 코드리뷰 반영] "사용자가"는 그 자체로는 정상 답변에도 등장할 여지가 있는
+# 일반적인 단어라 단독으로는 오탐 위험이 있음(예: 정상 답변이 "사용자가 궁금해하실 만한
+# 정보는~" 식으로 시작할 가능성을 완전히 배제 못함) — "이모지는"/"라고 나와 있습니다"처럼
+# 정상 답변에 나올 일이 거의 없는 강한 마커는 그 자체로 판정하고, "사용자가"는 작성
+# 계획/지시사항을 서술하는 표현과 함께 나올 때만 유출로 판단하도록 분리.
+_STRONG_REASONING_LEAK_MARKERS = ("이모지는", "라고 나와 있습니다", "라고 나와있습니다")
+_WEAK_REASONING_LEAK_MARKER = "사용자가"
+_PLAN_LANGUAGE_MARKERS = ("하면 됩니다", "작성합니다", "생략하고", "제한합니다", "언급할 것", "지어내지")
+
+
+class _ReasoningLeakError(RuntimeError):
+    """LLM이 최종 답변 대신 추론/작성 계획을 그대로 반환한 것으로 보일 때 발생."""
+
+
+def _looks_like_leaked_reasoning(text: str) -> bool:
+    if any(marker in text for marker in _STRONG_REASONING_LEAK_MARKERS):
+        return True
+    return _WEAK_REASONING_LEAK_MARKER in text and any(p in text for p in _PLAN_LANGUAGE_MARKERS)
+
 
 def _invoke_with_prompts(specific_prompt: str, context: str) -> str:
     """공통 프롬프트(COMMON_ANSWER_SYSTEM_PROMPT) + 노드별 프롬프트를 각각 별도의
     SystemMessage로 함께 전달 — 페르소나·어투·이모지 개수 등 공통 원칙은 한 곳에서만
     관리하고, 노드별 프롬프트에는 그 노드만의 고유 규칙만 남기기 위함(2026-07-14 프롬프트 세분화).
     주 모델 실패 시 백업 모델로 폴백(app/core/llm.py). 반환 전 마크다운 강조 문법(**, __)을
-    제거해 순수 텍스트만 남긴다."""
+    제거해 순수 텍스트만 남긴다.
+
+    추론 유출이 감지되면 예외를 던진다 — 이 함수를 감싸는 4개 호출부(search_knowledge_node,
+    _generate_processed_price_answer, _generate_comparison_answer, generate_answer_node)가
+    이미 전부 "LLM 호출 실패 시 템플릿 답변으로 폴백"하는 try/except를 갖고 있어, 각 노드를
+    따로 고칠 필요 없이 여기 한 곳에서만 방어하면 기존 폴백 경로를 그대로 재사용할 수 있음.
+    """
     response = invoke_with_fallback(
         [
             SystemMessage(content=COMMON_ANSWER_SYSTEM_PROMPT),
@@ -61,7 +92,14 @@ def _invoke_with_prompts(specific_prompt: str, context: str) -> str:
     )
     content = response.content
     text = content if isinstance(content, str) else str(content)
-    return _MARKDOWN_EMPHASIS_RE.sub("", text)
+    text = _MARKDOWN_EMPHASIS_RE.sub("", text)
+    if _looks_like_leaked_reasoning(text):
+        # [2026-07-15 코드리뷰 반영] 예외 메시지 자체에 LLM 응답 원문을 그대로 담지
+        # 않음(로그·트레이싱 시스템에 원치 않게 전체 내용이 노출될 수 있음) — 디버깅용
+        # 원문은 별도로 콘솔에만 출력하고, 예외는 짧고 고정된 메시지만 사용.
+        print(f"[nodes] LLM 응답이 추론 유출로 보여 폐기: {text!r}")
+        raise _ReasoningLeakError("LLM이 최종 답변 대신 추론 과정을 반환한 것으로 보임")
+    return text
 
 
 _KNOWLEDGE_N_RESULTS = 4
@@ -252,7 +290,7 @@ def resolve_processed_items_node(state: AgentState) -> dict[str, Any]:
         return {}
 
     try:
-        processed = get_processed_price(good_name)
+        processed = get_processed_price(good_name, region=state.get("region"))
     except Exception as e:
         print(f"[resolve_processed_items] 참가격 DB 조회 실패: {e}")
         return {}
@@ -271,6 +309,7 @@ def resolve_processed_items_node(state: AgentState) -> dict[str, Any]:
                     "avg_price": processed["avg_price"],
                     "sample_count": processed["sample_count"],
                     "inspect_day": processed["inspect_day"],
+                    "region": processed.get("region"),
                 }
             )
         else:
@@ -323,20 +362,26 @@ def search_processed_price_node(state: AgentState) -> dict[str, Any]:
     ChromaDB 유사도 검색으로 상품 1개만 콕 집는 방식도 검토했으나, "소"를 검색했을 때
     "천일염"이 나왔던 것처럼 엉뚱한 상품이 잘못 골라질 위험이 있어(2026-07-14 사용자 확인)
     매칭되는 상품을 전부 보여주는 방식을 택함 — 잘못된 단일 매칭 자체가 발생할 수 없음.
+
+    [2026-07-15 추가] 프론트에서 선택한 지역(state["region"])이 있으면 그 지역 평균을
+    우선 사용(get_processed_price가 price_gokr_regional_avg 조회) — 사용자가 "전국
+    평균과 경기도 평균이 다른데 왜 전국 평균만 나오냐"고 확인한 걸 계기로 연결.
     """
     price_data = state.get("price_data", [])
+    region = state.get("region")
     results = []
     for item in price_data:
         matches = search_processed_items(item["item_name"])
         products = []
         for match in matches:
-            price_info = get_processed_price(match["good_name"])
+            price_info = get_processed_price(match["good_name"], region=region)
             if price_info:
                 products.append(
                     {
                         "good_name": match["good_name"],
                         "avg_price": price_info["avg_price"],
                         "sample_count": price_info["sample_count"],
+                        "region": price_info.get("region"),
                     }
                 )
         results.append(
@@ -350,7 +395,13 @@ def search_processed_price_node(state: AgentState) -> dict[str, Any]:
 
 
 def _processed_price_facts(results: list[dict]) -> str:
-    """가공식품 단독 조회 답변 생성 LLM에게 넘겨줄 근거 데이터 — 이 안에 없는 수치는 지어내면 안 됨."""
+    """가공식품 단독 조회 답변 생성 LLM에게 넘겨줄 근거 데이터 — 이 안에 없는 수치는 지어내면 안 됨.
+
+    [2026-07-15 추가] p["region"]이 있으면(프론트에서 지역을 선택한 경우) 그 지역
+    평균이라는 걸 데이터 단계부터 명시 — 사용자가 "전국 평균과 경기도 평균이 다른데
+    왜 전국 평균만 나오냐"고 확인한 걸 계기로, 이제는 지역 평균을 쓰면서도 마치
+    전국 평균인 것처럼 말하지 않도록 LLM에게 시점(price_as_of)과 동일한 방식으로 투명하게 전달.
+    """
     lines = []
     for r in results:
         if not r["found"]:
@@ -358,7 +409,9 @@ def _processed_price_facts(results: list[dict]) -> str:
             continue
         lines.append(f"- {r['item_name']} 검색 결과 (판정 없이 평균가만 제공):")
         for p in r["products"]:
-            lines.append(f"  - {p['good_name']}: 평균 {p['avg_price']}원 (매장 {p['sample_count']}곳 기준)")
+            region = p.get("region")
+            scope = f"{region} 매장" if region else "전국 매장"
+            lines.append(f"  - {p['good_name']}: 평균 {p['avg_price']}원 ({scope} {p['sample_count']}곳 기준)")
     return "\n".join(lines)
 
 
@@ -369,7 +422,9 @@ def _template_processed_price_answer(results: list[dict]) -> str:
         if not r["found"]:
             lines.append(ANSWER_PROCESSED_UNSUPPORTED_LINE.format(item=r["item_name"]))
             continue
-        product_lines = ", ".join(f"{p['good_name']} 평균 {p['avg_price']}원" for p in r["products"])
+        product_lines = ", ".join(
+            f"{p['good_name']} {p.get('region') or '전국'} 평균 {p['avg_price']}원" for p in r["products"]
+        )
         lines.append(f"{r['item_name']}: {product_lines}")
     return "\n".join(lines)
 
@@ -402,12 +457,25 @@ def _processed_price_answer_covers_results(answer: str, results: list[dict]) -> 
     return False
 
 
+def _processed_price_answer_covers_regions(answer: str, results: list[dict]) -> bool:
+    """[2026-07-15 추가] 지역 평균(예: "경기도")이 쓰였는데 답변이 그 지역명을 전혀
+    언급하지 않으면(전국 평균인 것처럼 오해될 수 있음) 실패 처리 — 지역 데이터가 아예
+    없는 경우(전국 평균만 쓰인 경우)엔 이 검증 자체를 건너뜀."""
+    regions = {p.get("region") for r in results for p in r.get("products", []) if p.get("region")}
+    if not regions:
+        return True
+    return any(region in answer for region in regions)
+
+
 def _generate_processed_price_answer(results: list[dict], user_query: str) -> str:
     context = f"사용자 질문: {user_query}\n가공식품 가격 조회 결과:\n{_processed_price_facts(results)}"
     try:
         answer = _invoke_with_prompts(PROCESSED_PRICE_ANSWER_SYSTEM_PROMPT, context)
         if not _processed_price_answer_covers_results(answer, results):
             print(f"[generate_answer_node] 가공식품 답변에 조회 결과 누락, 템플릿 답변으로 폴백: {answer!r}")
+            answer = _template_processed_price_answer(results)
+        elif not _processed_price_answer_covers_regions(answer, results):
+            print(f"[generate_answer_node] 가공식품 답변에 지역 표기 누락, 템플릿 답변으로 폴백: {answer!r}")
             answer = _template_processed_price_answer(results)
     except Exception as e:
         print(f"[generate_answer_node] 가공식품 LLM 호출 실패, 템플릿 답변으로 폴백: {e!r}")
