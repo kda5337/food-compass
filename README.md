@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="image/food_compass_logo_v2.png" alt="Food Compass Logo" width="200"/>
+</p>
+
 # 🧭 Food Compass (장바구니 물가 판단 에이전트)
 
 > 지속되는 고물가 속, 자취생을 위한 "이거 지금 사도 될까?"에 답하는 LangGraph + RAG 기반 AI 에이전트
