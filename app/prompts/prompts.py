@@ -129,11 +129,13 @@ ANSWER_PRICE_WITH_AMOUNT_AS_OF_LINE = "{item}: {as_of} 가격 {price}원/{unit}(
 ANSWER_NO_DATA = "조회된 가격 데이터가 없습니다."
 
 # 판정(diff_pct) 뒤에 이어 붙이는 평년 대비 참고 정보 (있을 때만 사용)
-# [2026-07-14 라벨 수정] month_diff_pct = 1개월전(dpr5) vs 평년(dpr7) 계산이라 "평년 대비"가
-# 정확한 라벨(기존엔 "1개월 전 대비"로 표기돼 있어 실제 계산과 안 맞았음 — 계산은 그대로 두고
-# 라벨만 수정). week_diff_pct는 diff_pct와 계산이 완전히 동일해(둘 다 1주일전 vs 1개월전)
-# 라벨을 맞추면 같은 값이 중복 표시되는 문제가 있어 필드 자체를 제거함(ANSWER_WEEK_DIFF_SUFFIX도
-# 함께 삭제).
+# [2026-07-14 라벨 수정] month_diff_pct는 "평년 대비"가 정확한 라벨(기존엔 "1개월 전 대비"로
+# 표기돼 있어 실제 계산과 안 맞았음 — 계산은 그대로 두고 라벨만 수정). week_diff_pct는
+# diff_pct와 계산이 완전히 동일해(둘 다 1주일전 vs 1개월전) 라벨을 맞추면 같은 값이 중복
+# 표시되는 문제가 있어 필드 자체를 제거함(ANSWER_WEEK_DIFF_SUFFIX도 함께 삭제).
+# [2026-07-15 (8) 수정] month_diff_pct의 실제 계산 기준을 1개월전(dpr5)에서 화면 표시
+# 가격과 같은 시점(1주일전, dpr3)으로 변경(app/tools/judge.py) — "평년 대비"라는 라벨이
+# 실제로 화면에 보여주는 가격과 같은 시점을 가리키도록 정정.
 ANSWER_MONTH_DIFF_SUFFIX = ", 평년 대비 {sign}{diff}%"
 
 # DB에 없는(미지원) 품목 안내 — 가격을 임의로 만들어내지 않고 명확히 고지

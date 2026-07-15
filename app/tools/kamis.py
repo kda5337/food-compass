@@ -140,6 +140,17 @@ def _resolve_today_price(row: dict) -> dict:
     투명하게 밝히기 위해, 실제 사용된 필드가 며칠 전인지를 resolved["price_as_of"]에
     담아 반환 — 당일가를 그대로 썼으면 "당일", fallback을 탔으면 그 필드의 라벨, 아무
     필드도 못 찾았으면 None(가격 데이터 자체가 없는 경우이므로 시점 표기 불필요).
+
+    [2026-07-15 (9) 중요] 이 함수가 만드는 dpr1/price_as_of는 오직
+    `app/graph/nodes.py`의 `compare_items_node`(시나리오 1: 쌀 vs 즉석밥 비교)에서만
+    실제로 사용됨(kamis_item.get("dpr1")/get("price_as_of")). 반면 일반 가격 판정
+    경로(`app/tools/judge.py`의 `judge_price`/`judge_price_node`, "OO 지금 비싸?")는
+    이 dpr1 값을 아예 받지 않고 dpr3(1주일전)만 근거로 판정·표시하므로, 그쪽에서
+    "오늘 답변에 보여주는 가격이 며칠 전 기준인지"는 이 함수가 아니라
+    `JudgePriceOutput.price_as_of`(judge.py에서 직접, 항상 "1주일전"으로 계산)가
+    책임진다 — 두 price_as_of를 혼동해서 서로 다른 경로에 잘못 전달하지 않도록 주의
+    (실제로 judge_price_node가 한동안 이 함수의 dpr1 기준 price_as_of를 잘못
+    가져다 써서, 화면엔 1주일전 가격을 보여주면서 "당일"이라고 고지하던 사고가 있었음).
     """
     resolved = dict(row)
     resolved["price_as_of"] = _DAY_LABELS["dpr1"]

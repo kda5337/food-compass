@@ -754,7 +754,9 @@ def _price_facts(judgments: list[dict], substitutes: list[str]) -> str:
         month_diff = j.get("month_diff_pct")
         if month_diff is not None:
             msign = "+" if month_diff >= 0 else ""
-            # month_diff_pct = 1개월전(dpr5) vs 평년(dpr7) → "평년 대비"가 정확한 라벨
+            # [2026-07-15 (8) 수정] month_diff_pct = 화면에 표시되는 현재가(1주일전) vs
+            # 평년(dpr7) → "현재가는 ~원, 평년 대비 X%"라고 답할 때 실제로 같은 시점
+            # 가격끼리 비교되도록 함(이전엔 1개월전 가격 기준이라 표시 가격과 시점이 어긋났음)
             line += f", 평년 대비 {msign}{month_diff}%"
         lines.append(line)
     if substitutes:
