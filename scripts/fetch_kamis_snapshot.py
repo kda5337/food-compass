@@ -25,6 +25,12 @@ _RETENTION_DAYS = 7
 # 가능성을 낮추기 위한 최소한의 여유(price_gokr 쪽 _REQUEST_INTERVAL_SEC와 동일한 취지)
 _REQUEST_INTERVAL_SEC = 0.5
 
+# [2026-07-15 (10) 추가] 부류가 6개뿐이라 1개만 실패해도 비율로는 16.7% — 재시도까지
+# 다 소진한 일시적 실패가 부류 1개 정도는 종종 있을 수 있다고 보고 허용 범위로 둠.
+# 2개 이상(33%+) 실패하면 실제로 문제(예: 이전에 겪은 6/6 전체 실패처럼 광범위한 차단)일
+# 가능성이 높아 이 경우만 실패로 표시(price_gokr의 _FAILURE_RATE_THRESHOLD와 동일한 목적).
+_FAILURE_RATE_THRESHOLD = 0.20
+
 
 def main() -> None:
     regday = date.today().isoformat()
@@ -60,11 +66,18 @@ def main() -> None:
     print(f"{_RETENTION_DAYS}일 이전 스냅샷 정리: {deleted}건 삭제")
 
     if failed_categories:
-        # [2026-07-15 추가] 성공한 부류는 이미 저장·정리까지 끝났으니 여기서 죽지
-        # 않지만, 실패가 있었다는 사실 자체는 GitHub Actions에서 "실패"로 보여야
-        # 방치되지 않음(조용히 continue만 하면 매번 절반만 수집해도 초록불로 보여
-        # 알아채기 어려움).
-        sys.exit(1)
+        # [2026-07-15 (10) 수정] 기존엔 실패가 하나라도 있으면 무조건 exit(1)이었는데,
+        # 부류 6개 중 1개 정도의 일시적 실패는 정상 범위로 보고, 그 이상(임계치 초과)일
+        # 때만 실패로 표시 — 성공한 부류는 이미 저장·정리까지 끝났으니 여기서 죽지 않되,
+        # 방치되지 않도록 진짜 심각한 경우만 GitHub Actions에서 "실패"로 보이게 함.
+        failure_rate = len(failed_categories) / len(CATEGORY_CODES)
+        if failure_rate > _FAILURE_RATE_THRESHOLD:
+            print(
+                f"실패율 {failure_rate:.1%}(임계치 {_FAILURE_RATE_THRESHOLD:.0%}) 초과 — "
+                "실패로 표시합니다."
+            )
+            sys.exit(1)
+        print(f"실패율 {failure_rate:.1%}은 임계치({_FAILURE_RATE_THRESHOLD:.0%}) 이내라 정상 종료로 처리합니다.")
 
 
 if __name__ == "__main__":

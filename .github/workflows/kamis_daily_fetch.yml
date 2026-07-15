@@ -1,10 +1,13 @@
 name: KAMIS Daily Fetch
 
+# [2026-07-15 (11) 수정] KAMIS가 GitHub Actions 러너 IP를 계속 차단하는 것을 실측으로
+# 확인함(같은 날 같은 러너에서 참가격 API는 98.9% 성공했는데 KAMIS만 매번 6/6 전체
+# 실패 — GCE VM(food-compass, Seoul)에서는 6/6 전부 정상 성공하는 것도 직접 확인).
+# 매일 스케줄 실행 책임을 GCE VM의 crontab(appuser, `0 0 * * *` UTC)으로 옮기고, 여기서는
+# schedule 트리거를 제거 — 이 워크플로우가 매일 자동으로 실패만 반복하는 걸 막기 위함.
+# workflow_dispatch는 그대로 남겨서 필요할 때 수동으로 GitHub Actions에서도 재현/디버깅
+# 가능하게 함(예: VM 자체 문제인지 KAMIS 문제인지 다시 구분해야 할 때).
 on:
-  schedule:
-    # [2026-07-14 수정] 18:00 KST -> 09:00 KST로 변경
-    # 매일 09:00 KST = 00:00 UTC
-    - cron: "0 0 * * *"
   workflow_dispatch: {}
 
 env:

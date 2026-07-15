@@ -45,6 +45,13 @@ _PROBE_GOOD_ID = "265"
 # 품목 하나당 API 호출 1회 — 457개 연속 호출 시 서버 부담을 줄이기 위한 간격(초)
 _REQUEST_INTERVAL_SEC = 0.2
 
+# [2026-07-15 (10) 추가] 재시도까지 다 소진하고도 실패하는 품목이 매번 소수(1~2%) 있는
+# 게 공공 API 특성상 정상적인 수준이라는 걸 실측으로 확인함(457개 중 5개 실패, 452개
+# 성공) — 실패가 하나라도 있으면 무조건 exit(1)이라 이런 정상적인 실행도 GitHub
+# Actions에서 매번 "실패"로 표시돼 진짜 심각한 장애(예: 전체 다운)와 구분이 안 됐음.
+# 실패율이 이 임계치를 넘을 때만 실패로 표시하도록 완화.
+_FAILURE_RATE_THRESHOLD = 0.05
+
 
 def main() -> None:
     print("[1/5] 식품 품목 마스터 조회 중...")
@@ -68,8 +75,13 @@ def main() -> None:
     inspect_day = find_latest_inspect_day(_PROBE_GOOD_ID)
     total_saved = 0
     failed_items: list[str] = []
+    # [2026-07-15 (10) 추가] 조사일 탐색 자체가 실패하면 품목 가격을 단 하나도 못
+    # 가져온 것이라, 아래 실패율 계산(failed_items/items)으로는 잡히지 않음(품목
+    # 개수 대비 실패 1건은 임계치 이내로 보임) — 이 경우는 비율과 무관하게 항상
+    # 실패로 표시해야 하는 치명적 실패라 별도 플래그로 관리.
+    critical_failure = inspect_day is None
 
-    if inspect_day is None:
+    if critical_failure:
         # [2026-07-15 (4) 수정] 기존엔 여기서 바로 sys.exit(1)해서 [1~3/5]에서 이미
         # 저장한 품목/매장/지역 데이터는 남지만 보관정책 정리(delete_old_snapshots)를
         # 못 타고 죽었음 — "정리는 항상 실행, 실패 표시는 맨 마지막에" 원칙과 어긋나서
@@ -108,10 +120,19 @@ def main() -> None:
     print(f"{_RETENTION_DAYS}일 이전 스냅샷 정리: {deleted}건 삭제")
 
     if failed_items:
-        # [2026-07-15 추가] 성공한 품목은 이미 저장·정리까지 끝났으니 여기서 죽지
-        # 않지만, 실패가 있었다는 사실 자체는 GitHub Actions에서 "실패"로 보여야
-        # 방치되지 않음(조용히 continue만 하면 매번 일부만 수집해도 초록불로 보임).
-        sys.exit(1)
+        # [2026-07-15 (10) 수정] 기존엔 실패가 하나라도 있으면 무조건 exit(1)이었는데,
+        # 실측 결과 457개 중 4~5개(1% 내외) 실패는 공공 API 특성상 매번 있는 정상적인
+        # 수준이었음 — 그때마다 GitHub Actions가 "실패"로 뜨면 진짜 심각한 장애(예:
+        # 이전에 겪은 전체 다운)와 구분이 안 돼서 무뎌짐. 실패율이 임계치를 넘거나
+        # 조사일 탐색 자체가 실패한 치명적 경우에만 실패로 표시.
+        failure_rate = len(failed_items) / len(items) if items else 1.0
+        if critical_failure or failure_rate > _FAILURE_RATE_THRESHOLD:
+            print(
+                f"실패율 {failure_rate:.1%}(임계치 {_FAILURE_RATE_THRESHOLD:.0%}) 초과 또는 "
+                "치명적 실패 — 실패로 표시합니다."
+            )
+            sys.exit(1)
+        print(f"실패율 {failure_rate:.1%}은 임계치({_FAILURE_RATE_THRESHOLD:.0%}) 이내라 정상 종료로 처리합니다.")
 
 
 if __name__ == "__main__":
