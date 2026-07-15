@@ -78,7 +78,8 @@ def _print_main_summary(client: chromadb.ClientAPI, keyword: str | None) -> None
     for doc, meta in zip(docs, metas, strict=True):
         name = (meta or {}).get("name", "")
         source = (meta or {}).get("source", "")
-        line = f"  - {doc}" + (f"  (name={name}, source={source})" if meta else "  (metadata 없음)")
+        category = (meta or {}).get("category", "")
+        line = f"  - {doc}" + (f"  (name={name}, source={source}, category={category})" if meta else "  (metadata 없음)")
         if keyword and keyword not in doc and keyword not in name:
             continue
         print(line)

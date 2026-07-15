@@ -4,6 +4,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.tools.judge import judge_price_node
 from app.tools.kamis import get_raw_price_node
+from app.tools.user_input import user_input_node
 
 from .nodes import (
     compare_items_node,
@@ -62,6 +63,7 @@ def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
     graph.add_node("router", router_node)
     graph.add_node("validate_request", validate_request_node)
+    graph.add_node("user_input", user_input_node)
     graph.add_node("get_raw_price", get_raw_price_node)
     graph.add_node("resolve_processed_items", resolve_processed_items_node)
     graph.add_node("compare_items", compare_items_node)
@@ -86,12 +88,17 @@ def build_graph() -> StateGraph:
         "validate_request",
         _route_decision,
         {
-            "price": "get_raw_price",
-            "hybrid": "get_raw_price",
+            # [2026-07-15 추가] region/unit이 필요한 price/hybrid 경로만 user_input을
+            # 거침 — knowledge는 가격과 무관해 이 LLM 호출을 아낌. 프론트에서 이미
+            # selectbox로 region/unit을 넘겼으면 user_input_node가 LLM 호출 없이
+            # 그대로 통과시킴(텍스트만 온 경우에만 LLM으로 추출 시도).
+            "price": "user_input",
+            "hybrid": "user_input",
             "knowledge": "search_knowledge",
             "off-topic": "generate_offtopic",
         },
     )
+    graph.add_edge("user_input", "get_raw_price")
     # [시나리오 1] get_raw_price(KAMIS) 이후 항상 resolve_processed_items를 거침 —
     # 일반적인 단일/다중 원물 조회는 이 노드가 그대로 통과시켜(price_data 변경 없음)
     # 기존 judge_price 흐름과 동일하게 동작하고, "원물 1개 + 가공식품 1개" 조합일 때만

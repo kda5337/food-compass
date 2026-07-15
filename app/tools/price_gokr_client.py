@@ -34,7 +34,20 @@ _FOOD_CATEGORY_PREFIXES = ("0301", "0302")
 
 
 def _service_key() -> str:
-    return os.environ["PRICE_GOKR_SERVICE_KEY"]
+    """[2026-07-15 추가] 이전엔 os.environ["PRICE_GOKR_SERVICE_KEY"]를 그대로 써서, 이
+    값이 빈 문자열일 때(예: GitHub Actions Secrets에 등록 자체가 안 된 경우 —
+    ${{ secrets.X }}는 미등록이어도 예외 없이 빈 문자열로 치환됨) API가 "ServiceKey="로
+    빈 채 호출돼 알아보기 힘든 404를 던졌음(실제 재현: price_gokr_daily_fetch cron 첫
+    실행에서 발생). 원인을 바로 알 수 있도록 여기서 먼저 명확한 에러로 막는다.
+    """
+    key = os.environ.get("PRICE_GOKR_SERVICE_KEY", "")
+    if not key:
+        raise RuntimeError(
+            "PRICE_GOKR_SERVICE_KEY가 비어있습니다. GitHub Actions Secrets에 "
+            "'PRICE_GOKR_SERVICE_KEY' 이름으로 등록돼 있는지 확인하세요 "
+            "(레포 Settings > Secrets and variables > Actions)."
+        )
+    return key
 
 
 def fetch_food_items() -> list[dict[str, Any]]:
