@@ -27,4 +27,4 @@
 |---|---|
 | `vector_store.py` | ChromaDB 컬렉션 싱글톤 — `get_collection()`(대체품 유사도 검색용 `all_food_products`), `get_knowledge_collection()`(지식 RAG용 `food_knowledge`) |
 | `price_cache.py` | `price_cache` 테이블(API 장애 폴백 캐시, CLAUDE.md §11 설계). 현재 실사용은 `/health`의 `ping()`뿐 — save/get은 설계상 존재하며 `scripts/check_price_cache.py`로 수동 점검 가능 |
-| `user_input.py` | (팀원 작업 중) 사용자 문장에서 지역명·단위 추출 노드 — 아직 그래프에 연결되지 않은 WIP |
+| `user_input.py` | `user_input_node` — 지역명·단위 확보. `graph/graph.py`에서 price/hybrid 경로에 연결돼 있음(knowledge는 가격 무관이라 건너뜀). 프론트 selectbox 값이 있으면 그대로 통과, 없으면 사용자 문장에서 LLM으로 추출(필드별 병합 — 이미 있는 값은 유지, 누락된 필드만 보완) |

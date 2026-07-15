@@ -61,6 +61,11 @@ def user_input_node(state: AgentState) -> dict[str, Any]:
     프론트엔드에서 이미 selectbox로 확정된 region/unit이 넘어온 경우
     LLM 호출 없이 그대로 통과시키고, 없는 경우(예: 텍스트로만 질문한 경우)에만
     LLM으로 사용자 발화에서 추출을 시도한다.
+
+    [2026-07-15 코드리뷰 반영] 기존엔 region/unit 중 하나만 있어도(예: region만
+    있고 unit은 없는 경우) 둘 다 없는 것으로 보고 LLM 추출 결과로 전체를 덮어써서,
+    이미 확보된 필드까지 LLM이 못 찾으면 None으로 지워버리는 문제가 있었음 — 필드별로
+    이미 있는 값은 그대로 유지하고, 누락된 필드만 LLM 추출 결과로 보완하도록 수정.
     """
     existing_region = state.get("region")
     existing_unit = state.get("unit")
@@ -73,7 +78,7 @@ def user_input_node(state: AgentState) -> dict[str, Any]:
 
     if not query.strip():
         print("[user_input_node] 사용자 입력이 비어있음")
-        return {"region": None, "unit": None}
+        return {"region": existing_region, "unit": existing_unit}
 
     try:
         response = llm.invoke(
@@ -85,8 +90,10 @@ def user_input_node(state: AgentState) -> dict[str, Any]:
         result = _parse_llm_json(response.content)
     except Exception as e:
         print(f"[user_input_node] LLM 추출 실패: {type(e).__name__}: {e}")
-        return {"region": None, "unit": None}
+        return {"region": existing_region, "unit": existing_unit}
 
-    print(f"[user_input_node] LLM 추출: region={result['region']!r}, unit={result['unit']!r}")
+    region = existing_region or result["region"]
+    unit = existing_unit or result["unit"]
+    print(f"[user_input_node] 필드별 병합 결과: region={region!r}, unit={unit!r}")
 
-    return {"region": result["region"], "unit": result["unit"]}
+    return {"region": region, "unit": unit}

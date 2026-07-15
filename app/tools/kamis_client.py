@@ -66,8 +66,8 @@ def _require_env(name: str) -> str:
 
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=2, min=2, max=15),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
 )
 def fetch_category_prices(
@@ -83,6 +83,13 @@ def fetch_category_prices(
     [2026-07-15 추가] "406 Not Acceptable" 1회 실패를 계기로 재시도(최대 3회, 지수
     백오프) 추가 — 같은 요청이 다른 시점/헤더로는 성공하는 걸 확인해서, 일시적
     차단으로 보고 방어적으로 재시도하도록 함.
+
+    [2026-07-15 (2) 추가] 실제 cron 재발 로그(첫 카테고리 요청부터 406)를 보면 시도
+    간격 2초/4초짜리 3회로는 부족할 수 있다고 판단 — 최대 시도 5회, 백오프 상한을
+    30초로 늘려 차단이 좀 더 오래가는 경우까지 흡수하도록 함(최악의 경우 부류 하나당
+    최대 약 2+4+8+16+30≈60초 대기, 6개 부류라 전체 cron이 과도하게 길어지진 않음).
+    그래도 끝까지 실패하면 scripts/fetch_kamis_snapshot.py의 부류별 skip-and-continue가
+    나머지 부류를 계속 처리하는 최종 방어선 역할을 함.
     """
     cert_key = _require_env("KAMIS_CERT_KEY")
     cert_id = _require_env("KAMIS_CERT_ID")

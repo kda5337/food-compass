@@ -20,9 +20,9 @@
 
 ## 그래프 흐름
 
-```
+```text
 START → router → [off-topic → 거절 / 그 외 → validate_request(2차 검증)]
-  → price·hybrid → get_raw_price → resolve_processed_items
+  → price·hybrid → user_input(지역/단위 확보) → get_raw_price → resolve_processed_items
        ├ 원물+가공 2개 조합 → compare_items ────────┐
        ├ 전부 KAMIS에 없음 → search_processed_price ─┤
        └ 그 외 → judge_price → [비쌈 → search_substitute] ─┤

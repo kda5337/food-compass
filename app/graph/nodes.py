@@ -47,16 +47,18 @@ _MARKDOWN_EMPHASIS_RE = re.compile(r"\*\*|__")
 
 # [2026-07-15 추가] "삼겹살"만 입력했을 때 LLM이 최종 답변 대신 "사용자가 삼겹살 가격을
 # 물어봤고... 이모지는 2개 이하로 제한합니다..."처럼 시스템 프롬프트 지시사항을 그대로
-# 되풀이하는 추론 과정/작성 계획을 답변으로 반환한 걸 실제로 확인함(Langfuse 트레이스로
-# 재현 확인 예정). 기존 하드개런티(품목명 언급 체크)는 이런 유출 텍스트 안에도 실제
-# 상품명이 포함돼 있어 통과시켜버림 — 별도 탐지 필요. 아래 마커는 정상적인 가격 답변에서는
-# 나올 일이 거의 없는, "사용자/지시사항을 3인칭으로 서술"하는 패턴만 골라 오탐 위험을 낮춤.
-_REASONING_LEAK_MARKERS = (
-    "사용자가",
-    "이모지는",
-    "라고 나와 있습니다",
-    "라고 나와있습니다",
-)
+# 되풀이하는 추론 과정/작성 계획을 답변으로 반환한 걸 실제로 확인함. 기존 하드개런티
+# (품목명 언급 체크)는 이런 유출 텍스트 안에도 실제 상품명이 포함돼 있어 통과시켜버림 —
+# 별도 탐지 필요.
+#
+# [2026-07-15 코드리뷰 반영] "사용자가"는 그 자체로는 정상 답변에도 등장할 여지가 있는
+# 일반적인 단어라 단독으로는 오탐 위험이 있음(예: 정상 답변이 "사용자가 궁금해하실 만한
+# 정보는~" 식으로 시작할 가능성을 완전히 배제 못함) — "이모지는"/"라고 나와 있습니다"처럼
+# 정상 답변에 나올 일이 거의 없는 강한 마커는 그 자체로 판정하고, "사용자가"는 작성
+# 계획/지시사항을 서술하는 표현과 함께 나올 때만 유출로 판단하도록 분리.
+_STRONG_REASONING_LEAK_MARKERS = ("이모지는", "라고 나와 있습니다", "라고 나와있습니다")
+_WEAK_REASONING_LEAK_MARKER = "사용자가"
+_PLAN_LANGUAGE_MARKERS = ("하면 됩니다", "작성합니다", "생략하고", "제한합니다", "언급할 것", "지어내지")
 
 
 class _ReasoningLeakError(RuntimeError):
@@ -64,7 +66,9 @@ class _ReasoningLeakError(RuntimeError):
 
 
 def _looks_like_leaked_reasoning(text: str) -> bool:
-    return any(marker in text for marker in _REASONING_LEAK_MARKERS)
+    if any(marker in text for marker in _STRONG_REASONING_LEAK_MARKERS):
+        return True
+    return _WEAK_REASONING_LEAK_MARKER in text and any(p in text for p in _PLAN_LANGUAGE_MARKERS)
 
 
 def _invoke_with_prompts(specific_prompt: str, context: str) -> str:
@@ -90,7 +94,11 @@ def _invoke_with_prompts(specific_prompt: str, context: str) -> str:
     text = content if isinstance(content, str) else str(content)
     text = _MARKDOWN_EMPHASIS_RE.sub("", text)
     if _looks_like_leaked_reasoning(text):
-        raise _ReasoningLeakError(f"LLM이 최종 답변 대신 추론 과정을 반환한 것으로 보임: {text!r}")
+        # [2026-07-15 코드리뷰 반영] 예외 메시지 자체에 LLM 응답 원문을 그대로 담지
+        # 않음(로그·트레이싱 시스템에 원치 않게 전체 내용이 노출될 수 있음) — 디버깅용
+        # 원문은 별도로 콘솔에만 출력하고, 예외는 짧고 고정된 메시지만 사용.
+        print(f"[nodes] LLM 응답이 추론 유출로 보여 폐기: {text!r}")
+        raise _ReasoningLeakError("LLM이 최종 답변 대신 추론 과정을 반환한 것으로 보임")
     return text
 
 

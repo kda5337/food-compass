@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING, Any
 
 from app.tools.judge import parse_price
 from app.tools.price_snapshot import (
-    find_kind_name_parents,
     get_latest_prices,
+    get_latest_prices_by_kind_name,
     search_similar_item_names,
 )
 
@@ -200,17 +200,9 @@ def get_raw_price_node(state: AgentState) -> dict[str, Any]:
             # (사용자 확인: "삼겹살"→돼지 삼겹살 1건만, "갈비"처럼 여러 동물에 겹치면
             # →돼지 갈비 + 소 갈비처럼 각 동물의 그 부위만, 다른 부위까지 확장하진 않음).
             try:
-                kind_parents = find_kind_name_parents(item_name)
+                rows.extend(get_latest_prices_by_kind_name(item_name))
             except Exception as e:
                 print(f"[get_raw_price] 부위명 매칭 실패: {e}")
-                kind_parents = []
-            for parent in kind_parents:
-                try:
-                    parent_rows = get_latest_prices(parent)
-                except Exception as e:
-                    print(f"[get_raw_price] DB 조회 실패({parent}): {e}")
-                    continue
-                rows.extend(r for r in parent_rows if r.get("kind_name") == item_name)
 
         if not rows:
             price_data.append(

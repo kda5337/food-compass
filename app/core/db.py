@@ -29,7 +29,12 @@ _DATABASE_URL = os.getenv("DATABASE_URL", "")
     retry=retry_if_exception_type(psycopg2.OperationalError),
 )
 def get_conn():
-    """DATABASE_URL 기반 psycopg2 연결 생성 — OperationalError 시 3회까지 재시도."""
+    """DATABASE_URL 기반 psycopg2 연결 생성 — OperationalError 시 3회까지 재시도.
+
+    [2026-07-15 코드리뷰 반영] connect_timeout이 없으면 호스트가 응답 없을 때 OS
+    기본 TCP 타임아웃(수십 초~수 분)까지 한 시도가 무한정 걸릴 수 있어, 재시도
+    3회를 붙여도 전체가 실질적으로 멈춘 것처럼 오래 걸림 — 시도당 10초로 제한.
+    """
     url = urllib.parse.urlparse(_DATABASE_URL)
     return psycopg2.connect(
         host=url.hostname,
@@ -38,4 +43,5 @@ def get_conn():
         user=urllib.parse.unquote(url.username or ""),
         password=urllib.parse.unquote(url.password or ""),
         sslmode="require",
+        connect_timeout=10,
     )

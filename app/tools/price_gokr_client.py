@@ -22,8 +22,15 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 load_dotenv()
+
+# [2026-07-15 추가] 457개 품목을 순회하며 매번 새 요청을 여는 fetch_prices_for_item에서
+# 실제로 "Read timed out"(urllib3 ReadTimeoutError -> requests.ConnectionError)이 발생해
+# 스크립트 전체가 중단된 것을 확인함(457개 중 50번째에서 실패, 이후 407개 미처리) —
+# 공공 API가 가끔 응답을 늦게 주는 것으로 보여 재시도로 완화.
+_RETRYABLE_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
 
 _BASE_URL = "http://openapi.price.go.kr/openApiImpl/ProductPriceInfoService/"
 
@@ -50,6 +57,11 @@ def _service_key() -> str:
     return key
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+)
 def fetch_food_items() -> list[dict[str, Any]]:
     """전체 품목 카탈로그(604개) 중 식품 카테고리(0301/0302)만 필터링해서 반환."""
     res = requests.get(
@@ -81,6 +93,11 @@ def fetch_food_items() -> list[dict[str, Any]]:
     return items
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+)
 def fetch_all_stores() -> list[dict[str, Any]]:
     """전체 판매처(매장) 마스터 조회 (entpId 없이 호출하면 전체 목록 반환)."""
     res = requests.get(
@@ -113,8 +130,17 @@ def fetch_all_stores() -> list[dict[str, Any]]:
     return stores
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+)
 def fetch_prices_for_item(good_id: str, inspect_day: str) -> list[dict[str, Any]]:
-    """품목 하나(good_id)의 특정 조사일(YYYYMMDD) 매장별 가격 전체 조회."""
+    """품목 하나(good_id)의 특정 조사일(YYYYMMDD) 매장별 가격 전체 조회.
+
+    [2026-07-15 추가] 457개 품목을 순회하며 호출하는 도중 실제로 "Read timed out"이
+    발생해 스크립트 전체가 중단된 것을 확인함 — 최대 3회까지 지수 백오프로 재시도.
+    """
     res = requests.get(
         _BASE_URL + "getProductPriceInfoSvc.do",
         params={

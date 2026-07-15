@@ -134,27 +134,48 @@ def search_similar_item_names(keyword: str) -> list[str]:
     return [row[0] for row in rows]
 
 
-def find_kind_name_parents(kind_name: str) -> list[str]:
-    """부위명(kind_name)만으로 검색했을 때 그 부위를 가진 품목명(item_name) 목록을 반환.
+def get_latest_prices_by_kind_name(kind_name: str, limit: int = _SIMILAR_ITEM_NAME_LIMIT) -> list[dict[str, Any]]:
+    """부위명(kind_name)만으로 검색했을 때, 그 부위를 가진 모든 품목(item_name)의
+    최신 regday row를 한 번의 쿼리·커넥션으로 조회.
 
     [2026-07-15 추가] "삼겹살"은 KAMIS의 item_name이 아니라 "돼지"의 kind_name(부위)일
     뿐이라, item_name 기준 정확/ILIKE 매칭이 둘 다 실패해 참가격(data.go.kr)으로 새고
     있었음(실제 재현 확인). "수입 ~"류는 국내산 기준 응답이 되도록 제외(사용자 확인) —
     "삼겹살"→돼지만, "소고기"류 alias와 동일한 국내산 우선 원칙.
+
+    [2026-07-15 코드리뷰 반영] 기존엔 이 함수(당시 이름 find_kind_name_parents)가
+    item_name 목록만 반환하고, 호출부(kamis.py)가 그 목록을 순회하며 매 item_name마다
+    get_latest_prices()를 별도 호출 — parent 수만큼(최대 2~3개) 커넥션을 새로 열고
+    쿼리도 그만큼 반복 실행했음. item_name별 "최신 regday"는 윈도우 함수로 각 item_name
+    자신의 데이터만 기준으로 구해서, 커넥션 1개·쿼리 1번으로 모든 parent의 최신 row를
+    한 번에 가져오도록 변경. search_similar_item_names와 동일하게 결과 행 수를 LIMIT으로
+    제한(부위 하나가 지나치게 많은 item_name에 걸리는 경우에 대한 방어).
     """
     conn = _get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT DISTINCT item_name FROM price_snapshot "
-            "WHERE kind_name = %s AND item_name NOT ILIKE '수입 %%' ORDER BY item_name;",
-            (kind_name,),
+            """
+            SELECT item_name, item_code, kind_name, kind_code, rank_name, rank_code,
+                   unit, dpr1, dpr2, dpr3, dpr4, dpr5, dpr6, dpr7, regday, source, fetched_at
+            FROM (
+                SELECT *,
+                       RANK() OVER (PARTITION BY item_name ORDER BY regday DESC) AS _rank
+                FROM price_snapshot
+                WHERE kind_name = %s AND item_name NOT ILIKE '수입 %%'
+            ) ranked
+            WHERE _rank = 1
+            ORDER BY item_name
+            LIMIT %s;
+            """,
+            (kind_name, limit),
         )
+        columns = [desc[0] for desc in cur.description]
         rows = cur.fetchall()
         cur.close()
     finally:
         conn.close()
-    return [row[0] for row in rows]
+    return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
 def delete_old_snapshots(retention_days: int = 7) -> int:
