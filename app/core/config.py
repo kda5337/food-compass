@@ -25,9 +25,13 @@ class Settings(BaseSettings):
     # [2026-07-14] LLMOps 트레이싱(선택 가점) — langfuse 패키지는 pyproject.toml의
     # "stretch"(선택) 그룹에 있어 CI/팀원 환경엔 기본 설치가 안 됨. 값이 비어있으면
     # app/core/tracing.py가 트레이싱 없이 조용히 넘어감(§0-1 CI 검증에 영향 없음).
+    langfuse_tracing_enabled: bool = True
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
-    langfuse_host: str = ""
+    # langfuse SDK v4 Langfuse(...)의 생성자 인자명이 base_url이라 필드명도 맞춤
+    # (구 필드명 langfuse_host였으나 v4에서 host= 인자가 없어 TypeError로 트레이싱이
+    # 조용히 비활성화되고 있었음 — 이 필드명은 .env의 LANGFUSE_BASE_URL과 그대로 매핑됨).
+    langfuse_base_url: str = ""
 
     host: str = "0.0.0.0"
     port: int = 8000

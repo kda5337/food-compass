@@ -15,7 +15,7 @@ from app.core.config import settings
 
 _callback_handler: Any = None
 
-if settings.langfuse_public_key and settings.langfuse_secret_key:
+if settings.langfuse_tracing_enabled and settings.langfuse_public_key and settings.langfuse_secret_key:
     try:
         from langfuse import Langfuse
         from langfuse.langchain import CallbackHandler
@@ -25,10 +25,12 @@ if settings.langfuse_public_key and settings.langfuse_secret_key:
         # 제각각이라(app/tools/*.py 각자 load_dotenv() 호출) import 타이밍에 따라 os.environ이
         # 아직 안 채워졌을 수 있음 — 우리 pydantic Settings(.env를 자체적으로 읽음)의 값을
         # 명시적으로 넘겨서 이 타이밍 문제를 원천적으로 피한다.
+        # 같은 public_key로 Langfuse()를 다시 호출해도 SDK가 기존 싱글턴을 재사용하므로
+        # 아래 CallbackHandler()는 항상 이 인스턴스(base_url 포함)를 사용하게 된다.
         Langfuse(
             public_key=settings.langfuse_public_key,
             secret_key=settings.langfuse_secret_key,
-            host=settings.langfuse_host or None,
+            base_url=settings.langfuse_base_url or None,
         )
         _callback_handler = CallbackHandler()
         print("[tracing] Langfuse 트레이싱 활성화됨")
@@ -46,7 +48,7 @@ def get_trace_callbacks() -> list[Any]:
 
 
 def flush_traces() -> None:
-    """서버 종료 시 배치로 쌓인 트레이스를 마저 전송 — 실패해도 종료를 막지 않음."""
+    """프로세스 종료(서버 shutdown, CLI 종료) 시 배치로 쌓인 트레이스를 마저 전송 — 실패해도 종료를 막지 않음."""
     if _callback_handler is None:
         return
     try:
