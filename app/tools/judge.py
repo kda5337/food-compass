@@ -8,8 +8,8 @@ from app.tools.normalize import normalize_price_unit
 if TYPE_CHECKING:
     from app.graph.state import AgentState
 
-_EXPENSIVE_THRESHOLD = 5.0   # 평년 대비 +10% 초과 → 비쌈
-_CHEAP_THRESHOLD = -5.0      # 평년 대비 -10% 미만 → 쌈
+_EXPENSIVE_THRESHOLD = 10.0   # 평년 대비 +10% 초과 → 비쌈
+_CHEAP_THRESHOLD = -10.0      # 평년 대비 -10% 미만 → 쌈
 
 
 def parse_price(price_str: str) -> float | None:
