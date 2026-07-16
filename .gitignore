@@ -21,3 +21,12 @@ chroma_db/
 
 #
 CLAUDE.md
+
+.git/
+.gitmodules
+.env
+node_modules/
+.venv/
+dist/
+build/
+__pycache__/
